@@ -1,0 +1,47 @@
+[mysqld]
+# 服务器 ID（必须唯一）
+server-id = 1
+
+# 启用 binlog
+log-bin = mysql-bin
+binlog-format = ROW
+
+# 设置 binlog 过期时间（7天）
+expire_logs_days = 7
+
+# 设置 binlog 文件大小
+max_binlog_size = 100M
+
+# 启用 GTID
+gtid-mode = ON
+enforce-gtid-consistency = ON
+
+# 设置字符集
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+
+# 性能优化
+innodb_buffer_pool_size = 256M
+innodb_log_file_size = 64M
+innodb_flush_log_at_trx_commit = 1
+sync_binlog = 1
+
+# 连接配置
+max_connections = 200
+max_connect_errors = 1000
+
+# 查询缓存
+query_cache_type = 1
+query_cache_size = 32M
+
+# 慢查询日志
+slow_query_log = 1
+slow_query_log_file = /var/log/mysql/slow.log
+long_query_time = 2
+
+# 错误日志
+log-error = /var/log/mysql/error.log
+
+# 一般查询日志（开发环境可启用）
+# general_log = 1
+# general_log_file = /var/log/mysql/general.log

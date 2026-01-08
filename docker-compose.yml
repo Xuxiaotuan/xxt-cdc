@@ -1,0 +1,173 @@
+version: '3.8'
+
+services:
+  # 源 MySQL 数据库
+  source-mysql:
+    image: mysql:8.0
+    container_name: cdc-source-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: source_db
+      MYSQL_USER: cdc_user
+      MYSQL_PASSWORD: cdc_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - source_mysql_data:/var/lib/mysql
+      - ./docker/mysql/source-init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./docker/mysql/source.cnf:/etc/mysql/conf.d/source.cnf
+    command: --server-id=1 --log-bin=mysql-bin --binlog-format=ROW --binlog-do-db=source_db
+    networks:
+      - cdc-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # 目标 MySQL 数据库
+  target-mysql:
+    image: mysql:8.0
+    container_name: cdc-target-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: target_db
+      MYSQL_USER: cdc_user
+      MYSQL_PASSWORD: cdc_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - target_mysql_data:/var/lib/mysql
+      - ./docker/mysql/target-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - cdc-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # MySQL CDC 服务
+  cdc-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mysql-cdc-service
+    environment:
+      # 源数据库配置
+      SOURCE_MYSQL_HOST: source-mysql
+      SOURCE_MYSQL_PORT: 3306
+      SOURCE_MYSQL_USERNAME: root
+      SOURCE_MYSQL_PASSWORD: password
+      SOURCE_MYSQL_DATABASE: source_db
+      
+      # 目标数据库配置
+      TARGET_MYSQL_HOST: target-mysql
+      TARGET_MYSQL_PORT: 3306
+      TARGET_MYSQL_USERNAME: root
+      TARGET_MYSQL_PASSWORD: password
+      TARGET_MYSQL_DATABASE: target_db
+      
+      # CDC 配置
+      CDC_BATCH_SIZE: 1000
+      CDC_FLUSH_INTERVAL: 5s
+      CDC_APPLY_WORKERS: 4
+      CDC_ROUTER_PARTITIONS: 16
+      
+      # 偏移量存储配置
+      CDC_OFFSET_STORAGE: mysql
+      CDC_OFFSET_COMMIT_INTERVAL: 10s
+      
+      # 热表集配置
+      CDC_HOT_SET_MAX_TABLES: 1000
+      CDC_HOT_SET_MIN_RESIDENCE: 5m
+      CDC_HOT_SET_COOLDOWN: 30m
+      
+      # 快照配置
+      CDC_SNAPSHOT_MAX_CONCURRENT: 2
+      CDC_SNAPSHOT_TASK_TIMEOUT: 120
+      
+      # DDL 处理配置
+      CDC_DDL_STRATEGY: alert
+      CDC_DDL_ENABLE_ALERTS: true
+      
+      # 日志配置
+      LOG_LEVEL: INFO
+      LOG_STRUCTURED: true
+      LOG_FILE_ENABLED: true
+      
+      # JVM 配置
+      JAVA_OPTS: "-Xms1g -Xmx2g -XX:+UseG1GC -XX:+UseStringDeduplication"
+      
+      # 监控配置
+      ENABLE_JMX: true
+      JMX_PORT: 9999
+    ports:
+      - "8080:8080"  # HTTP API
+      - "9090:9090"  # Prometheus 指标
+      - "9999:9999"  # JMX 监控
+    volumes:
+      - cdc_logs:/app/logs
+      - cdc_data:/app/data
+    depends_on:
+      source-mysql:
+        condition: service_healthy
+      target-mysql:
+        condition: service_healthy
+    networks:
+      - cdc-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # Prometheus 监控
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cdc-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - cdc-network
+    depends_on:
+      - cdc-service
+
+  # Grafana 仪表板
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cdc-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - cdc-network
+    depends_on:
+      - prometheus
+
+volumes:
+  source_mysql_data:
+  target_mysql_data:
+  cdc_logs:
+  cdc_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  cdc-network:
+    driver: bridge

@@ -1,0 +1,39 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Prometheus 自身监控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # MySQL CDC 服务监控
+  - job_name: 'mysql-cdc-service'
+    static_configs:
+      - targets: ['cdc-service:9090']
+    scrape_interval: 10s
+    metrics_path: /metrics
+    scrape_timeout: 5s
+
+  # MySQL 数据库监控（如果启用了 mysqld_exporter）
+  - job_name: 'mysql-source'
+    static_configs:
+      - targets: ['source-mysql:9104']
+    scrape_interval: 30s
+    
+  - job_name: 'mysql-target'
+    static_configs:
+      - targets: ['target-mysql:9104']
+    scrape_interval: 30s
+
+# 告警规则配置
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
