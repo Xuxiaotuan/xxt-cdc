@@ -5,6 +5,7 @@ import cn.xuyinyin.cdc.config.CDCConfig
 import cn.xuyinyin.cdc.coordinator.{DefaultOffsetCoordinator, FileOffsetStore, MySQLOffsetStore, OffsetCoordinator, OffsetStore}
 import cn.xuyinyin.cdc.filter.TableFilter
 import cn.xuyinyin.cdc.health.HealthCheck
+import cn.xuyinyin.cdc.logging.CDCLogging
 import cn.xuyinyin.cdc.metrics.CDCMetrics
 import cn.xuyinyin.cdc.model._
 import cn.xuyinyin.cdc.normalizer.{EventNormalizer, MySQLEventNormalizer}
@@ -13,7 +14,6 @@ import cn.xuyinyin.cdc.reader.{BinlogReader, MySQLBinlogReader}
 import cn.xuyinyin.cdc.router.{EventRouter, HashBasedRouter}
 import cn.xuyinyin.cdc.sink.{MySQLSink, PooledMySQLSink}
 import cn.xuyinyin.cdc.worker.{ApplyWorker, DefaultApplyWorker}
-import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.stream.Materializer
 import org.apache.pekko.Done
 import org.apache.pekko.stream.scaladsl.Sink
@@ -41,7 +41,7 @@ import scala.util.{Failure, Success}
  * @param mat Pekko Streams Materializer，用于运行流处理
  * @param ec 执行上下文，用于异步操作
  */
-class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionContext) extends LazyLogging {
+class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionContext) extends CDCLogging {
   
   // ========== 状态管理 ==========
   
@@ -93,6 +93,9 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   
   /** 健康检查：提供系统健康状态 */
   private var healthCheck: Option[HealthCheck] = None
+  
+  /** 性能指标日志输出器：定期输出性能指标 */
+  private var performanceLogger: Option[cn.xuyinyin.cdc.logging.PerformanceLogger] = None
   
   /** Snapshot 阶段记录的 High Watermark，用于 Streaming 阶段的起始位置 */
   private var snapshotHighWatermark: Option[BinlogPosition] = None
@@ -186,6 +189,9 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
     logger.info("Stopping CDC Engine")
     isRunning = false
     
+    // 停止性能日志输出器
+    performanceLogger.foreach(_.stop())
+    
     // 停止流处理管道
     pipeline.foreach(_.stop())
     
@@ -249,7 +255,7 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
     
     if (CDCState.isValidTransition(oldState, newState)) {
       currentState.set(newState)
-      logger.info(s"State transition: ${oldState.name} → ${newState.name}")
+      logBold(s"State transition: ${oldState.name} → ${newState.name}")
     } else {
       throw new IllegalStateException(s"Invalid state transition: ${oldState.name} → ${newState.name}")
     }
@@ -392,7 +398,8 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
         partition,
         sink.get,
         offsetCoordinator.get,
-        config.parallelism.batchSize
+        config.parallelism.batchSize,
+        Some(metrics)  // 传递 metrics
       )
     }
     logger.debug(s"Initialized ${applyWorkers.size} apply workers")
@@ -401,7 +408,12 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   /** 初始化健康检查：提供系统健康状态 */
   private def initializeHealthCheck(): Future[Unit] = Future {
     healthCheck = Some(HealthCheck(metrics))
-    logger.debug("Health check initialized")
+    
+    // 同时初始化性能指标日志输出器
+    performanceLogger = Some(cn.xuyinyin.cdc.logging.PerformanceLogger(metrics))
+    performanceLogger.foreach(_.start())
+    
+    logger.debug("Health check and performance logger initialized")
   }
   
   /**
@@ -551,7 +563,8 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
           batchCount = 0
           
           if (rowCount % 10000 == 0) {
-            logger.info(s"Snapshot progress for ${tableId.table}: $rowCount rows")
+            val percentage = if (rowCount > 0) f"${(rowCount.toDouble / rowCount * 100)}%.1f" else "0.0"
+            logger.info(s"Snapshot progress for ${tableId.table}: $rowCount rows ($percentage%)")
           }
         }
       }
@@ -647,7 +660,8 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
       eventNormalizer.get,
       eventRouter.get,
       applyWorkers,
-      offsetCoordinator.get
+      offsetCoordinator.get,
+      Some(metrics)  // 传递 metrics
     ))
     
     // 启动管道（异步运行）

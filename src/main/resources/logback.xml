@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    
+    <!-- 控制台输出 - 彩色文本格式 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="cn.xuyinyin.cdc.logging.ColoredConsoleEncoder"/>
+    </appender>
+    
+    <!-- 文件输出 -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>./logs/cdc-service.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>./logs/cdc-service.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>10GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp/>
+                <logLevel/>
+                <loggerName/>
+                <message/>
+                <mdc/>
+                <arguments/>
+                <stackTrace/>
+            </providers>
+        </encoder>
+    </appender>
+    
+    <!-- 特定 Logger 配置 -->
+    <logger name="cn.xuyinyin.cdc" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.engine" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.snapshot" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.coordinator" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.metrics" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.reader" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.sink" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.normalizer" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.ddl" level="WARN"/>
+    <logger name="cn.xuyinyin.cdc.logging" level="INFO"/>
+    
+    <!-- Pekko 日志配置 -->
+    <logger name="org.apache.pekko" level="INFO"/>
+    <logger name="org.apache.pekko.stream" level="WARN"/>
+    <logger name="org.apache.pekko.http" level="INFO"/>
+    
+    <!-- 数据库相关日志 -->
+    <logger name="com.zaxxer.hikari" level="INFO"/>
+    <logger name="com.mysql" level="INFO"/>
+    
+    <!-- 根 Logger -->
+    <root level="${LOG_LEVEL:-INFO}">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+    
+</configuration>

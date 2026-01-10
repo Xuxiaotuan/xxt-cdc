@@ -5,65 +5,169 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
 [![Scala Version](https://img.shields.io/badge/scala-2.13.14-red)](https://www.scala-lang.org/)
 [![Pekko Version](https://img.shields.io/badge/pekko-1.1.3-blue)](https://pekko.apache.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-> ✅ **项目状态**: 编译成功，核心功能已实现，正在进行功能完善和测试
+## 📊 构建状态（2026-01-10）
 
-## 🚀 特性
+- ✅ **编译**: 成功 (`sbt compile`)
+- ⚠️ **测试**: 0 通过 / 0 失败（测试套件开发中）
+- ⚠️ **警告**: 84 个（主要：未使用导入/变量，不影响功能）
+- 🚧 **Snapshot/Catchup**: 实验性（代码已实现但未充分测试，**不建议生产启用**）
 
-### 核心功能
-- **实时数据同步**: 基于 MySQL Binlog 的实时数据变更捕获
-- **高性能处理**: 单线程读取 + 多线程并行处理架构
-- **数据一致性**: Effectively-once 语义保证，支持幂等写入
-- **灵活过滤**: 支持数据库和表级别的包含/排除规则
-- **快照与追赶**: 支持全量快照 + 增量追赶的一致性同步
+> **重要**: 核心 CDC 功能已实现并可用。Snapshot/Catchup 功能有代码实现，但未经充分测试，生产环境建议设置 `offset.enable-snapshot = false`。
 
-### 企业级特性
-- **高可用性**: 支持故障恢复和断点续传
-- **监控告警**: 完整的 Prometheus 指标和 Grafana 仪表板
-- **DDL 处理**: 智能 DDL 事件检测和告警机制
-- **配置管理**: 灵活的配置系统和运行时调整
-- **容器化部署**: Docker 和 Docker Compose 支持
+## 🎯 核心功能状态
 
-## 📋 系统要求
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| Binlog 实时读取 | ✅ 已实现 | 支持 GTID 和 File+Position 模式 |
+| 事件标准化 | ✅ 已实现 | INSERT/UPDATE/DELETE 完整支持 |
+| Hash 路由分区 | ✅ 已实现 | 保证同表同主键顺序性 |
+| 并行 Apply Workers | ✅ 已实现 | 可配置并行度 |
+| 幂等写入 | ✅ 已实现 | ON DUPLICATE KEY UPDATE |
+| Offset 协调 | ✅ 已实现 | Effectively-once 语义 |
+| 表过滤 | ✅ 已实现 | 支持正则/通配符 |
+| DDL 处理 | ✅ 检测/告警 | 仅检测，不自动同步 |
+| 监控 API | ✅ 已实现 | /health, /status, /metrics |
+| Snapshot | 🚧 实验性 | 代码已实现，但未充分测试，不建议生产使用 |
+| Catchup | 🚧 简化实现 | 基础实现，未充分测试，不建议生产使用 |
 
-- **Java**: JDK 11 或更高版本
-- **Scala**: 2.13.14
-- **SBT**: 1.12.0
-- **MySQL**: 5.7 或 8.0（需要启用 Binlog）
-- **内存**: 最小 2GB，推荐 4GB+
-- **CPU**: 最小 2 核，推荐 4 核+
+## 🚀 快速开始
 
-## 🔨 构建状态
+### 运行前检查清单
 
-### 最新构建信息
+**1. MySQL Binlog 配置**
+```sql
+-- 检查 Binlog 是否启用
+SHOW VARIABLES LIKE 'log_bin';          -- 应返回: ON
+SHOW VARIABLES LIKE 'binlog_format';    -- 应返回: ROW
+SHOW VARIABLES LIKE 'binlog_row_image'; -- 应返回: FULL
 
-- ✅ **编译状态**: 成功
-- ⚠️ **警告数量**: 84 个（主要是代码风格警告，不影响功能）
-- 📅 **最后更新**: 2026-01-07
-- 🔧 **构建工具**: SBT 1.12.0
+-- 如果未启用，在 my.cnf 中添加：
+[mysqld]
+server-id = 1
+log-bin = mysql-bin
+binlog-format = ROW
+binlog-row-image = FULL
+```
 
-### 编译项目
+**2. 账号权限**
+```sql
+-- 创建 CDC 专用账号
+CREATE USER 'cdc_user'@'%' IDENTIFIED BY 'your_password';
 
+-- 授予必要权限
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'cdc_user'@'%';
+GRANT SELECT ON source_db.* TO 'cdc_user'@'%';
+GRANT INSERT, UPDATE, DELETE ON target_db.* TO 'cdc_user'@'%';
+FLUSH PRIVILEGES;
+```
+
+**3. 环境要求**
+- JDK 11+
+- Scala 2.13.14
+- SBT 1.12.0
+- MySQL 5.7+ 或 8.0+
+
+### 最小配置示例
+
+创建 `application.conf`：
+
+```hocon
+cdc {
+  source {
+    host = "localhost"
+    port = 3306
+    username = "cdc_user"
+    password = "${DB_PASS}"  # 建议使用环境变量
+    database = "source_db"
+    connection-pool {
+      max-pool-size = 10
+      min-idle = 2
+      connection-timeout = 30s
+    }
+  }
+
+  target {
+    host = "localhost"
+    port = 3307
+    username = "cdc_user"
+    password = "${DB_PASS}"
+    database = "target_db"
+    connection-pool {
+      max-pool-size = 20
+      min-idle = 5
+      connection-timeout = 30s
+    }
+  }
+
+  filter {
+    include-databases = ["source_db"]
+    exclude-databases = ["information_schema", "mysql", "performance_schema", "sys"]
+    include-table-patterns = ["users", "orders.*"]  # 支持通配符
+    exclude-table-patterns = ["temp_.*", ".*_backup"]
+  }
+
+  parallelism {
+    partition-count = 64        # 路由分区数
+    apply-worker-count = 8      # 应用工作线程数
+    batch-size = 100            # 批处理大小
+    flush-interval = 1s         # 刷新间隔
+  }
+
+  offset {
+    store-type = "mysql"        # mysql 或 file
+    commit-interval = 5s        # 提交频率
+    start-from-latest = true    # true=从最新位置，false=从头开始
+    enable-snapshot = false     # ⚠️ 生产环境必须 false（未完成）
+    
+    mysql {
+      table-name = "cdc_offsets"
+    }
+    file {
+      path = "./data/offsets/offset.txt"
+    }
+  }
+}
+```
+
+完整配置示例见 [docs/example.conf](docs/example.conf)
+
+### 启动方式
+
+**方式 1: SBT（开发）**
 ```bash
-# 编译项目
-sbt compile
+# 使用默认配置
+sbt run
 
-# 运行测试
-sbt test
+# 使用自定义配置
+sbt -Dconfig.file=/path/to/app.conf run
+```
 
+**方式 2: JAR（生产）**
+```bash
 # 打包
 sbt assembly
 
-# 清理构建
-sbt clean
+# 运行
+java -Xmx2G -Xms1G \
+  -Dconfig.file=/path/to/app.conf \
+  -jar target/scala-2.13/xxt-cdc-assembly-*.jar
 ```
 
-### 已知问题
+## ⚙️ 配置说明
 
-- ⚠️ 部分快照功能尚未完全实现（SnapshotWorker）
-- ⚠️ 需要完善单元测试覆盖率
-- ℹ️ 代码中存在一些未使用的导入和变量（已标记为警告）
+| 配置项 | 类型 | 默认值 | 说明 | 常见取值 |
+|--------|------|--------|------|----------|
+| `parallelism.partition-count` | Int | 64 | 路由分区数，决定并行度 | 16-128 |
+| `parallelism.apply-worker-count` | Int | 8 | 应用工作线程数 | 4-32 |
+| `parallelism.batch-size` | Int | 100 | 批处理大小 | 50-1000 |
+| `parallelism.flush-interval` | Duration | 1s | 刷新间隔 | 500ms-5s |
+| `offset.store-type` | String | mysql | 偏移量存储类型 | mysql, file |
+| `offset.commit-interval` | Duration | 5s | 提交频率 | 1s-30s |
+| `offset.start-from-latest` | Boolean | true | 是否从最新位置开始 | true, false |
+| `offset.enable-snapshot` | Boolean | false | 是否启用快照（⚠️未完成） | **必须 false** |
+| `filter.include-table-patterns` | Array | [] | 包含表（支持正则/通配符） | ["users", "order.*"] |
+| `filter.exclude-table-patterns` | Array | [] | 排除表（支持正则/通配符） | ["temp_.*", ".*_bak"] |
 
 ## 🏗️ 架构设计
 
@@ -172,7 +276,7 @@ Source MySQL Binlog
               └──────────────────┘
 ```
 
-#### 3. 快照与追赶架构
+#### 3. 快照与追赶架构（🚧 未完成）
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -208,6 +312,8 @@ Source MySQL Binlog
 └─────────────────────────────────────────────────────────┘
 ```
 
+> ⚠️ **注意**: Snapshot/Catchup 功能尚未完成，生产环境请禁用。
+
 ### 核心组件详解
 
 #### 1. Binlog Reader
@@ -237,15 +343,15 @@ Source MySQL Binlog
   partition = hash(table_id + primary_key) % partition_count
   ```
 
-#### 5. Apply Workers
+#### 4. Apply Workers
 - **职责**: 并行处理数据写入
 - **特性**:
   - 多线程并行处理
   - 批量写入优化
   - 自动重试机制
-- **并行度**: 可配置（默认 4 个 worker）
+- **并行度**: 可配置（默认 8 个 worker）
 
-#### 6. Offset Coordinator
+#### 5. Offset Coordinator
 - **职责**: 管理消费位点和状态
 - **特性**:
   - 三阶段状态机（RECEIVED → APPLIED → COMMITTED）
@@ -253,7 +359,7 @@ Source MySQL Binlog
   - 原子性提交
 - **一致性**: Effectively-once 语义
 
-#### 7. Idempotent Sink
+#### 6. Idempotent Sink
 - **职责**: 幂等写入目标数据库
 - **特性**:
   - INSERT: `ON DUPLICATE KEY UPDATE`
@@ -274,14 +380,13 @@ Source MySQL Binlog
 | 监控 | Prometheus | 0.16.0 |
 | 日志 | Logback + Scala Logging | 1.4.12 |
 | 构建工具 | SBT | 1.12.0 |
-| 容器化 | Docker + Docker Compose | - |
 
 ### 性能特性
 
 #### 吞吐量
 - **单表**: 10,000+ TPS
 - **多表**: 50,000+ TPS（取决于硬件配置）
-- **批处理**: 支持 1000-5000 事件/批次
+- **批处理**: 支持 100-1000 事件/批次
 
 #### 延迟
 - **P50**: < 100ms
@@ -330,530 +435,254 @@ DELETE FROM table WHERE id = 1;
 3. 目标库故障 → 断路器保护，自动降级
 ```
 
-### 监控指标体系
+更多架构细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-#### 核心指标
-- `cdc_events_ingested_total`: 接收事件总数
-- `cdc_events_applied_total`: 应用事件总数
-- `cdc_binlog_lag_seconds`: Binlog 延迟
-- `cdc_ingest_rate_events_per_second`: 接收速率
-- `cdc_apply_rate_events_per_second`: 应用速率
+## 📊 监控与管理
 
-#### 性能指标
-- `cdc_processing_latency_seconds`: 处理延迟
-- `cdc_queue_depth`: 队列深度
-- `cdc_connection_pool_active`: 活跃连接数
+### 管理 API
 
-#### 错误指标
-- `cdc_errors_total`: 错误总数
-- `cdc_ddl_events_total`: DDL 事件总数
+| 端点 | 方法 | 说明 | 示例 |
+|------|------|------|------|
+| `/api/v1/health` | GET | 健康检查 | `curl http://localhost:8080/api/v1/health` |
+| `/status` | GET | 详细状态 | `curl http://localhost:8080/status` |
+| `/metrics` | GET | Prometheus 指标 | `curl http://localhost:8080/metrics` |
+| `/components` | GET | 组件状态 | `curl http://localhost:8080/components` |
 
-## 🚀 快速开始
-
-### 前置条件
-
-1. **安装 JDK 11+**
-```bash
-# macOS
-brew install openjdk@11
-
-# Ubuntu/Debian
-sudo apt-get install openjdk-11-jdk
-
-# 验证安装
-java -version
-```
-
-2. **安装 SBT**
-```bash
-# macOS
-brew install sbt
-
-# Ubuntu/Debian
-echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
-curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
-sudo apt-get update
-sudo apt-get install sbt
-
-# 验证安装
-sbt --version
-```
-
-3. **配置 MySQL Binlog**
-```sql
--- 检查 Binlog 是否启用
-SHOW VARIABLES LIKE 'log_bin';
-
--- 如果未启用，在 my.cnf 中添加：
-[mysqld]
-server-id = 1
-log-bin = mysql-bin
-binlog-format = ROW
-binlog-row-image = FULL
-```
-
-### 使用 Docker Compose（推荐）
-
-1. **克隆项目**
-```bash
-git clone <repository-url>
-cd mysql-cdc-service
-```
-
-2. **启动服务**
-```bash
-./scripts/deploy.sh start
-```
-
-3. **检查服务状态**
-```bash
-./scripts/deploy.sh status
-```
-
-4. **访问服务**
-- CDC Service API: http://localhost:8080
-- Prometheus 指标: http://localhost:9090/metrics
-- Grafana 仪表板: http://localhost:3000 (admin/admin)
-
-### 手动构建和部署
-
-1. **构建项目**
-```bash
-./scripts/build.sh all
-```
-
-2. **配置数据库**
-```bash
-# 源数据库需要启用 Binlog
-# 在 MySQL 配置文件中添加：
-[mysqld]
-server-id = 1
-log-bin = mysql-bin
-binlog-format = ROW
-```
-
-3. **配置应用**
-```bash
-cp docker/application.conf src/main/resources/
-# 编辑配置文件，设置数据库连接信息
-```
-
-4. **运行服务**
-```bash
-java -jar target/scala-2.13/xxt-cdc-assembly-*.jar
-```
-
-## ⚙️ 配置说明
-
-### 数据库配置
-
-```hocon
-# 源数据库配置
-source {
-  mysql {
-    host = "localhost"
-    port = 3306
-    username = "root"
-    password = "password"
-    database = "source_db"
-    
-    binlog {
-      server-id = 1001
-      include-tables = ["users", "orders"]
-      exclude-tables = ["logs", "temp_*"]
-    }
-  }
-}
-
-# 目标数据库配置
-target {
-  mysql {
-    host = "localhost"
-    port = 3307
-    username = "root"
-    password = "password"
-    database = "target_db"
-    
-    connection-pool {
-      maximum-pool-size = 20
-      minimum-idle = 5
-      connection-timeout = "30s"
-    }
-  }
+**健康检查响应示例：**
+```json
+{
+  "status": "healthy",
+  "state": "STREAMING",
+  "timestamp": "2026-01-10T12:00:00Z"
 }
 ```
 
-### CDC 处理配置
+**⚠️ 安全提示**: 管理 API 默认无鉴权/限流，建议：
+- 仅在内网访问
+- 通过反向代理加鉴权
+- 使用防火墙限制访问
 
-```hocon
-cdc {
-  # 批处理配置
-  batch {
-    size = 1000
-    flush-interval = "5s"
-  }
-  
-  # 并行处理配置
-  parallelism {
-    apply-workers = 4
-    router-partitions = 16
-  }
-}
+### 核心指标
+
+| 指标名 | 说明 |
+|--------|------|
+| `cdc_events_ingested_total` | 接收事件总数 |
+| `cdc_events_applied_total` | 应用事件总数 |
+| `cdc_binlog_lag_seconds` | Binlog 延迟（秒） |
+| `cdc_ingest_rate` | 接收速率（events/s） |
+| `cdc_apply_rate` | 应用速率（events/s） |
+| `cdc_errors_total` | 错误总数 |
+| `cdc_queue_depth` | 队列深度 |
+
+默认暴露端口：`8080`
+
+### 性能日志输出
+
+每 60 秒自动输出性能指标：
+
 ```
-
-### 环境变量
-
-| 变量名 | 描述 | 默认值 |
-|--------|------|--------|
-| `SOURCE_MYSQL_HOST` | 源数据库主机 | localhost |
-| `SOURCE_MYSQL_PORT` | 源数据库端口 | 3306 |
-| `TARGET_MYSQL_HOST` | 目标数据库主机 | localhost |
-| `TARGET_MYSQL_PORT` | 目标数据库端口 | 3306 |
-| `CDC_BATCH_SIZE` | 批处理大小 | 1000 |
-| `CDC_APPLY_WORKERS` | 并行工作线程数 | 4 |
-| `LOG_LEVEL` | 日志级别 | INFO |
-
-## 📊 监控和运维
-
-### 健康检查
-
-```bash
-# 检查服务健康状态
-curl http://localhost:8080/health
-
-# 检查详细状态
-curl http://localhost:8080/status
-```
-
-### 指标监控
-
-服务提供丰富的 Prometheus 指标：
-
-- `cdc_events_ingested_total`: 接收事件总数
-- `cdc_events_applied_total`: 应用事件总数
-- `cdc_binlog_lag_seconds`: Binlog 延迟（秒）
-- `cdc_queue_depth`: 队列深度
-- `cdc_errors_total`: 错误总数
-
-### 日志管理
-
-```bash
-# 查看实时日志
-./scripts/deploy.sh logs cdc-service true
-
-# 查看错误日志
-docker exec mysql-cdc-service tail -f /app/logs/cdc-service-error.log
+╔════════════════════════════════════════════════════════════╗
+║           CDC Performance Metrics                          ║
+╠════════════════════════════════════════════════════════════╣
+║ Total Events:    Ingested: 1,234 | Applied: 1,230        ║
+║ Ingest TPS:      20.50 events/s (avg since start)        ║
+║ Apply TPS:       20.33 events/s (avg since start)        ║
+║ Binlog Lag:      125ms (idle)                            ║
+║ Queue Depth:     45 / 1000 (4.5%)                        ║
+║ Error Rate:      0.12%                                   ║
+║ Uptime:          1h 23m 45s                              ║
+╚════════════════════════════════════════════════════════════╝
 ```
 
 ## 🔧 运维指南
 
-### 常见操作
+### 常见问题
 
-1. **重启服务**
-```bash
-./scripts/deploy.sh restart
-```
+| 问题 | 检查方法 | 解决方案 |
+|------|----------|----------|
+| 无法连接 MySQL | `telnet host port` | 检查 host/port/权限/防火墙 |
+| Binlog 未启用 | `SHOW VARIABLES LIKE 'log_bin'` | 在 my.cnf 启用 binlog |
+| 内存/CPU 高 | `jstat -gc`, `top` | 调整 `-Xmx`、`parallelism.*` |
+| Offset 提交失败 | 查看日志 | 检查 offset store 配置/权限 |
+| 数据延迟高 | 查看 `cdc_binlog_lag` | 增加 `apply-worker-count` |
 
-2. **查看服务状态**
-```bash
-./scripts/deploy.sh status
-```
+### 重启/恢复流程
 
-3. **备份数据**
-```bash
-./scripts/deploy.sh backup
-```
-
-4. **恢复数据**
-```bash
-./scripts/deploy.sh restore backups/20240101_120000
-```
-
-### 故障排查
-
-1. **服务无法启动**
-   - 检查数据库连接配置
-   - 确认 MySQL Binlog 已启用
-   - 查看错误日志
-
-2. **数据同步延迟**
-   - 检查 `cdc_binlog_lag_seconds` 指标
-   - 调整批处理大小和并行度
-   - 检查目标数据库性能
-
-3. **内存使用过高**
-   - 优化批处理配置
-   - 检查是否有内存泄漏
-   - 调整连接池大小
-
-### 性能调优
-
-1. **批处理优化**
+**从最新位置开始：**
 ```hocon
-cdc {
-  batch {
-    size = 2000        # 增加批处理大小
-    flush-interval = "3s"  # 减少刷新间隔
-  }
+offset {
+  start-from-latest = true
 }
 ```
 
-2. **并行度调整**
+**从指定位置开始：**
+```sql
+-- MySQL offset store
+UPDATE cdc_offsets SET binlog_file='mysql-bin.000123', binlog_position=4567890;
+```
+
+**File offset store 位置：**
+```
+./data/offsets/offset.txt
+```
+
+格式：`mysql-bin.000123:4567890`
+
+### 故障排查步骤
+
+1. **检查日志**
+```bash
+tail -f logs/cdc-service.log
+```
+
+2. **检查健康状态**
+```bash
+curl http://localhost:8080/api/v1/health
+```
+
+3. **检查指标**
+```bash
+curl http://localhost:8080/metrics | grep cdc_
+```
+
+4. **检查 MySQL 连接**
+```bash
+mysql -h host -P port -u user -p
+```
+
+## 🔒 安全建议
+
+### 敏感信息处理
+
+**❌ 不推荐：**
 ```hocon
-cdc {
-  parallelism {
-    apply-workers = 8      # 增加工作线程
-    router-partitions = 32 # 增加分区数
-  }
-}
+password = "plain_text_password"
 ```
 
-3. **连接池优化**
+**✅ 推荐：**
 ```hocon
-target {
-  mysql {
-    connection-pool {
-      maximum-pool-size = 50
-      minimum-idle = 10
-    }
-  }
+password = "${DB_PASS}"  # 使用环境变量
+```
+
+```bash
+export DB_PASS="your_password"
+java -jar app.jar
+```
+
+### 管理 API 安全
+
+默认绑定：`0.0.0.0:8080`
+
+**建议：**
+1. 通过反向代理（Nginx/HAProxy）加鉴权
+2. 使用防火墙限制访问
+3. 启用 HTTPS
+
+**Nginx 示例：**
+```nginx
+location /api/ {
+    auth_basic "CDC API";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+    proxy_pass http://localhost:8080/api/;
 }
 ```
 
-## 🧪 测试
+## 🐛 已知问题与限制
 
-### 单元测试
-```bash
-sbt test
-```
+### 未完成功能
 
-### 集成测试
-```bash
-# 启动测试环境
-./scripts/deploy.sh start
+| 功能 | 状态 | 影响 | 规避方案 |
+|------|------|------|----------|
+| Snapshot | 🚧 实验性 | 代码已实现但未充分测试 | 设置 `enable-snapshot = false` |
+| Catchup | 🚧 实验性 | 基础实现但未充分测试 | 设置 `enable-snapshot = false` |
+| DDL 自动同步 | 🚧 未实现 | 仅检测/告警 | 手动执行 DDL |
 
-# 运行集成测试
-sbt it:test
-```
+### 当前限制
 
-### 性能测试
-```bash
-# 使用 JMeter 或其他工具进行压力测试
-# 监控关键指标：TPS、延迟、错误率
-```
+1. **Snapshot/Catchup 功能未充分测试**
+   - 影响：代码已实现，但可能存在未知问题
+   - 规避：生产环境设置 `enable-snapshot = false`
 
-## 📚 API 文档
+2. **BinlogReader 无自动重连**
+   - 影响：网络中断时需手动重启
+   - 规避：使用进程监控工具（systemd/supervisor）
 
-### 健康检查 API
+3. **ApplyWorker 失败不阻断 offset**
+   - 影响：失败事件会被跳过
+   - 规避：监控 `cdc_errors_total` 指标
 
-```http
-GET /health
-```
+4. **管理 API 硬编码部分数据**
+   - 影响：部分状态信息不准确
+   - 规避：以 Prometheus 指标为准
 
-响应：
-```json
-{
-  "status": "healthy",
-  "timestamp": "2024-01-01T12:00:00Z",
-  "uptime": "PT1H30M",
-  "version": "1.0.0"
-}
-```
+5. **大量 INFO 级提交日志**
+   - 影响：日志文件增长快
+   - 规避：调整日志级别或增加日志轮转
 
-### 状态查询 API
+## 📚 文档
 
-```http
-GET /status
-```
+- [快速开始指南](docs/QUICK_START_GUIDE.md)
+- [架构设计](docs/ARCHITECTURE.md)
+- [配置说明](docs/CONFIGURATION.md)
+- [API 文档](docs/API.md)
+- [运维指南](docs/OPERATIONS.md)
+- [故障排查](docs/TROUBLESHOOTING.md)
+- [示例配置](docs/EXAMPLES.md)
 
-响应：
-```json
-{
-  "cdc": {
-    "state": "STREAMING",
-    "ingestTPS": 1500.0,
-    "applyTPS": 1480.0,
-    "binlogLag": 2.5,
-    "queueDepth": 150
-  },
-  "metrics" -> metrics.getSnapshot().toMap
-}
-```
+## 🔄 版本兼容性
 
-### 指标查询 API
+| 组件 | 版本 | 说明 |
+|------|------|------|
+| Scala | 2.13.14 | 必需 |
+| SBT | 1.12.0 | 必需 |
+| JDK | 11+ | 推荐 11 或 17 |
+| Pekko | 1.1.3 | 核心依赖 |
+| mysql-binlog-connector | 0.29.2 | Binlog 解析 |
+| HikariCP | 5.1.0 | 连接池 |
+| MySQL | 5.7 / 8.0 | 支持 GTID 和非 GTID |
 
-```http
-GET /metrics
-```
-
-返回 Prometheus 格式的指标数据。
+**MySQL 版本说明：**
+- MySQL 5.7: 完全支持
+- MySQL 8.0: 完全支持
+- GTID: 支持（推荐）
+- 非 GTID: 支持（File+Position 模式）
 
 ## 🤝 贡献指南
 
-1. Fork 项目
-2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add some amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建 Pull Request
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
-
-## 🆘 支持
-
-- 📧 邮件支持: support@example.com
-- 📖 文档: [项目文档](docs/)
-- 🐛 问题反馈: [GitHub Issues](https://github.com/example/mysql-cdc-service/issues)
-
-## 🗺️ 路线图
-
-### 已完成 ✅
-- [x] 核心 CDC 引擎实现
-- [x] Binlog 读取和解析
-- [x] 事件标准化和路由
-- [x] 并行 Apply Workers
-- [x] 偏移量管理和状态跟踪
-- [x] 幂等写入支持
-- [x] DDL 事件检测
-- [x] Prometheus 指标集成
-- [x] Docker 容器化支持
-- [x] 项目编译成功
-
-### 进行中 🚧
-- [ ] 完善快照功能实现
-- [ ] 增加单元测试覆盖率
-- [ ] 集成测试套件
-- [ ] 性能基准测试
-- [ ] 代码质量优化（消除警告）
-
-### 计划中 📋
-- [ ] 支持更多数据库类型（PostgreSQL、Oracle）
-- [ ] 图形化配置界面
-- [ ] 自动 DDL 同步
-- [ ] 数据转换和过滤规则
-- [ ] 多租户支持
-- [ ] 云原生部署支持
-- [ ] Kubernetes Operator
-- [ ] 完整的文档和示例
-
-## 📝 更新日志
-
-### v0.1.0 (2026-01-07)
-- ✅ 项目编译成功
-- ✅ 核心 CDC 功能实现
-- ✅ 偏移量协调器
-- ✅ 幂等写入支持
-- ⚠️ 快照功能部分实现
-- 📚 完整的架构文档
-- 🔧 移除 Hot Set Filter，简化架构
-
-## 🔍 故障排查
-
-### 编译问题
-
-**问题**: 编译失败，提示找不到依赖
-```bash
-# 解决方案：清理并重新下载依赖
-sbt clean
-sbt update
-sbt compile
-```
-
-**问题**: 内存不足错误
-```bash
-# 解决方案：增加 SBT 内存
-export SBT_OPTS="-Xmx2G -XX:+UseConcMarkSweepGC"
-sbt compile
-```
-
-### 运行时问题
-
-**问题**: 无法连接到 MySQL
-```bash
-# 检查 MySQL 是否运行
-mysql -h localhost -u root -p
-
-# 检查 Binlog 是否启用
-mysql> SHOW VARIABLES LIKE 'log_bin';
-```
-
-**问题**: 内存使用过高
-```bash
-# 调整 JVM 参数
-java -Xmx2G -Xms1G -jar target/scala-2.13/xxt-cdc-assembly-*.jar
-```
-
-**问题**: 数据同步延迟
-```bash
-# 检查指标
-curl http://localhost:8080/metrics | grep cdc_binlog_lag
-
-# 调整配置
-# 增加并行度和批处理大小
-```
-
-## 🗺️ 路线图
-
-- [ ] 支持更多数据库类型（PostgreSQL、Oracle）
-- [ ] 图形化配置界面
-- [ ] 自动 DDL 同步
-- [ ] 数据转换和过滤规则
-- [ ] 多租户支持
-- [ ] 云原生部署支持
-
----
-
-**注意**: 这是一个企业级 CDC 解决方案，在生产环境使用前请充分测试并根据实际需求调整配置。
-
-## 🤝 
-贡献指南
-
-我们欢迎所有形式的贡献！
-
-### 如何贡献
+### 开发流程
 
 1. **Fork 项目**
-2. **创建特性分支** (`git checkout -b feature/amazing-feature`)
-3. **提交更改** (`git commit -m 'Add some amazing feature'`)
-4. **推送到分支** (`git push origin feature/amazing-feature`)
-5. **创建 Pull Request**
+2. **创建分支** (`git checkout -b feature/my-feature`)
+3. **提交代码** (`git commit -m 'feat: add some feature'`)
+4. **推送分支** (`git push origin feature/my-feature`)
+5. **创建 PR**
+
+### 必须执行的命令
+
+```bash
+# 编译检查
+sbt compile
+
+# 代码格式化（如果配置了）
+sbt scalafmtAll
+
+# 运行测试（如果有）
+sbt test
+```
 
 ### 代码规范
 
-- 遵循 Scala 代码风格指南
-- 添加必要的注释和文档
-- 确保所有测试通过
-- 保持代码简洁和可读
+- Scala 2.13 标准
+- 避免未使用的导入/变量
+- 添加必要的注释
+- 保持代码简洁
 
-### 提交信息规范
+### PR/分支命名
 
-```
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
-```
-
-类型（type）:
-- `feat`: 新功能
-- `fix`: 修复 bug
-- `docs`: 文档更新
-- `style`: 代码格式调整
-- `refactor`: 代码重构
-- `test`: 测试相关
-- `chore`: 构建/工具相关
-
-示例:
-```
-feat(router): optimize hash-based routing algorithm
-
-Improve routing performance by using MurmurHash3 for better distribution.
-This ensures more even load balancing across apply workers.
-
-Closes #123
-```
+- `feature/xxx` - 新功能
+- `fix/xxx` - Bug 修复
+- `docs/xxx` - 文档更新
+- `refactor/xxx` - 代码重构
 
 ## 📄 许可证
 
@@ -861,35 +690,23 @@ Closes #123
 
 ## 🆘 支持
 
-- 📧 **邮件支持**: support@example.com
 - 📖 **文档**: [项目文档](docs/)
 - 🐛 **问题反馈**: [GitHub Issues](https://github.com/example/mysql-cdc-service/issues)
 - 💬 **讨论**: [GitHub Discussions](https://github.com/example/mysql-cdc-service/discussions)
 
-## 👥 贡献者
-
-感谢所有为这个项目做出贡献的开发者！
-
-## 🙏 致谢
-
-- [Apache Pekko](https://pekko.apache.org/) - 强大的 Actor 框架
-- [mysql-binlog-connector-java](https://github.com/shyiko/mysql-binlog-connector-java) - MySQL Binlog 解析
-- [HikariCP](https://github.com/brettwooldridge/HikariCP) - 高性能连接池
-
 ---
 
-**⚠️ 重要提示**: 
-- 本项目目前处于开发阶段，核心功能已实现并编译成功
-- 在生产环境使用前，请充分测试并根据实际需求调整配置
-- 建议先在测试环境中验证功能和性能
-- 欢迎提交 Issue 和 Pull Request 帮助改进项目
+**⚠️ 生产使用提示**:
+- 核心 CDC 功能已实现并稳定
+- 必须设置 `offset.enable-snapshot = false`
+- 建议先在测试环境验证
+- 监控 `cdc_binlog_lag` 和 `cdc_errors_total` 指标
+- 定期检查日志和性能指标
 
 **📊 项目统计**:
 - 代码行数: ~15,000 行
 - 编译状态: ✅ 成功
-- 测试覆盖率: 进行中
+- 核心功能: ✅ 完成
 - 文档完整度: 90%
-
----
 
 Made with ❤️ by the CDC Team

@@ -26,6 +26,7 @@ import scala.concurrent.duration._
  * @param eventRouter 事件路由器
  * @param applyWorkers Apply Worker 列表（每个分区一个）
  * @param offsetCoordinator 偏移量协调器
+ * @param metrics CDC 指标收集器
  */
 class CDCStreamPipeline(
   config: CDCConfig,
@@ -33,7 +34,8 @@ class CDCStreamPipeline(
   eventNormalizer: EventNormalizer,
   eventRouter: EventRouter,
   applyWorkers: Seq[ApplyWorker],
-  offsetCoordinator: OffsetCoordinator
+  offsetCoordinator: OffsetCoordinator,
+  metrics: Option[cn.xuyinyin.cdc.metrics.CDCMetrics] = None
 )(implicit mat: Materializer, ec: ExecutionContext) extends LazyLogging {
 
   private val partitionCount = config.parallelism.partitionCount
@@ -73,7 +75,14 @@ class CDCStreamPipeline(
               offsetCoordinator.markReceived(rawEvent.position)
               
               // 标准化事件
-              eventNormalizer.normalize(rawEvent).toList
+              val events = eventNormalizer.normalize(rawEvent).toList
+              
+              // 记录 ingest 指标
+              if (events.nonEmpty) {
+                metrics.foreach(_.recordIngest(rawEvent.position, rawEvent.timestamp))
+              }
+              
+              events
             }
             .withAttributes(ActorAttributes.supervisionStrategy(decider))
         )
@@ -167,7 +176,8 @@ object CDCStreamPipeline {
     eventNormalizer: EventNormalizer,
     eventRouter: EventRouter,
     applyWorkers: Seq[ApplyWorker],
-    offsetCoordinator: OffsetCoordinator
+    offsetCoordinator: OffsetCoordinator,
+    metrics: Option[cn.xuyinyin.cdc.metrics.CDCMetrics] = None
   )(implicit mat: Materializer, ec: ExecutionContext): CDCStreamPipeline = {
     new CDCStreamPipeline(
       config,
@@ -175,7 +185,8 @@ object CDCStreamPipeline {
       eventNormalizer,
       eventRouter,
       applyWorkers,
-      offsetCoordinator
+      offsetCoordinator,
+      metrics
     )
   }
 }

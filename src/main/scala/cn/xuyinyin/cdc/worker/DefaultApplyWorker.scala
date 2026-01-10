@@ -16,12 +16,14 @@ import scala.util.{Failure, Success}
  * @param sink MySQL Sink
  * @param offsetCoordinator 偏移量协调器
  * @param batchSize 批处理大小
+ * @param metrics CDC 指标收集器
  */
 class DefaultApplyWorker(
   partition: Int,
   sink: MySQLSink,
   offsetCoordinator: OffsetCoordinator,
-  batchSize: Int = 100
+  batchSize: Int = 100,
+  metrics: Option[cn.xuyinyin.cdc.metrics.CDCMetrics] = None
 )(implicit ec: ExecutionContext) extends ApplyWorker with LazyLogging {
 
   override def apply(events: Seq[ChangeEvent]): Future[ApplyResult] = {
@@ -115,9 +117,13 @@ class DefaultApplyWorker(
       case Some(data) =>
         sink.executeInsert(event.tableId, data).andThen {
           case Success(_) =>
-            logger.debug(s"Applied INSERT: ${event.tableId}, pk: ${event.primaryKey}")
+            // 记录指标
+            metrics.foreach(_.recordApply(1))
+            // 输出详细日志
+            logger.info(s"✓ INSERT: ${event.tableId} | PK: ${event.primaryKey} | Data: ${formatData(data)}")
           case Failure(ex) =>
-            logger.error(s"Failed INSERT: ${event.tableId}, pk: ${event.primaryKey}", ex)
+            metrics.foreach(_.recordError())
+            logger.error(s"✗ INSERT FAILED: ${event.tableId} | PK: ${event.primaryKey}", ex)
         }
       case None =>
         Future.failed(new IllegalStateException("INSERT event must have 'after' data"))
@@ -129,9 +135,34 @@ class DefaultApplyWorker(
       case Some(data) =>
         sink.executeUpdate(event.tableId, event.primaryKey, data).andThen {
           case Success(_) =>
-            logger.debug(s"Applied UPDATE: ${event.tableId}, pk: ${event.primaryKey}")
+            // 记录指标
+            metrics.foreach(_.recordApply(1))
+            // 输出详细日志 - 显示 before 和 after
+            val changeDetails = event.before match {
+              case Some(before) =>
+                // 找出变更的字段
+                val changedFields = data.filter { case (k, v) => 
+                  before.get(k) match {
+                    case Some(oldValue) => oldValue != v
+                    case None => true  // 新增的字段
+                  }
+                }
+                if (changedFields.nonEmpty) {
+                  val changes = changedFields.map { case (k, newValue) =>
+                    val oldValue = before.getOrElse(k, "NULL")
+                    s"$k: $oldValue → $newValue"
+                  }.mkString(", ")
+                  s"Changes: $changes"
+                } else {
+                  s"Data: ${formatData(data)}"
+                }
+              case None =>
+                s"New: ${formatData(data)}"
+            }
+            logger.info(s"✓ UPDATE: ${event.tableId} | PK: ${event.primaryKey} | $changeDetails")
           case Failure(ex) =>
-            logger.error(s"Failed UPDATE: ${event.tableId}, pk: ${event.primaryKey}", ex)
+            metrics.foreach(_.recordError())
+            logger.error(s"✗ UPDATE FAILED: ${event.tableId} | PK: ${event.primaryKey}", ex)
         }
       case None =>
         Future.failed(new IllegalStateException("UPDATE event must have 'after' data"))
@@ -141,9 +172,33 @@ class DefaultApplyWorker(
   private def applyDelete(event: ChangeEvent): Future[Unit] = {
     sink.executeDelete(event.tableId, event.primaryKey).andThen {
       case Success(_) =>
-        logger.debug(s"Applied DELETE: ${event.tableId}, pk: ${event.primaryKey}")
+        // 记录指标
+        metrics.foreach(_.recordApply(1))
+        // 输出详细日志
+        logger.info(s"✓ DELETE: ${event.tableId} | PK: ${event.primaryKey}")
       case Failure(ex) =>
-        logger.error(s"Failed DELETE: ${event.tableId}, pk: ${event.primaryKey}", ex)
+        metrics.foreach(_.recordError())
+        logger.error(s"✗ DELETE FAILED: ${event.tableId} | PK: ${event.primaryKey}", ex)
+    }
+  }
+  
+  /**
+   * 格式化数据用于日志输出
+   * 限制输出长度，避免日志过长
+   */
+  private def formatData(data: Map[String, Any]): String = {
+    val formatted = data.map { case (k, v) =>
+      val valueStr = v match {
+        case s: String if s.length > 50 => s.take(50) + "..."
+        case other => String.valueOf(other)
+      }
+      s"$k=$valueStr"
+    }.mkString(", ")
+    
+    if (formatted.length > 200) {
+      formatted.take(200) + "..."
+    } else {
+      formatted
     }
   }
 }
@@ -156,8 +211,9 @@ object DefaultApplyWorker {
     partition: Int,
     sink: MySQLSink,
     offsetCoordinator: OffsetCoordinator,
-    batchSize: Int = 100
+    batchSize: Int = 100,
+    metrics: Option[cn.xuyinyin.cdc.metrics.CDCMetrics] = None
   )(implicit ec: ExecutionContext): DefaultApplyWorker = {
-    new DefaultApplyWorker(partition, sink, offsetCoordinator, batchSize)
+    new DefaultApplyWorker(partition, sink, offsetCoordinator, batchSize, metrics)
   }
 }

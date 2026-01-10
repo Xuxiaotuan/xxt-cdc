@@ -1,19 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
     
-    <!-- 控制台输出 -->
+    <!-- 控制台输出 - 彩色文本格式 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
-            <providers>
-                <timestamp/>
-                <logLevel/>
-                <loggerName/>
-                <message/>
-                <mdc/>
-                <arguments/>
-                <stackTrace/>
-            </providers>
-        </encoder>
+        <encoder class="cn.xuyinyin.cdc.logging.ColoredConsoleEncoder"/>
     </appender>
     
     <!-- 文件输出 -->
@@ -81,9 +71,13 @@
     
     <!-- 特定 Logger 配置 -->
     <logger name="cn.xuyinyin.cdc" level="INFO"/>
-    <logger name="cn.xuyinyin.cdc.metrics" level="DEBUG"/>
-    <logger name="cn.xuyinyin.cdc.reader" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.engine" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.snapshot" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.coordinator" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.metrics" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.reader" level="DEBUG"/>
     <logger name="cn.xuyinyin.cdc.sink" level="INFO"/>
+    <logger name="cn.xuyinyin.cdc.normalizer" level="DEBUG"/>
     <logger name="cn.xuyinyin.cdc.ddl" level="WARN"/>
     
     <!-- 性能相关 Logger -->

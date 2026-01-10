@@ -1,10 +1,10 @@
 package cn.xuyinyin.cdc.reader
 
 import cn.xuyinyin.cdc.config.DatabaseConfig
+import cn.xuyinyin.cdc.logging.CDCLogging
 import cn.xuyinyin.cdc.model.{BinlogPosition, FilePosition, GTIDPosition, TableId}
 import com.github.shyiko.mysql.binlog.BinaryLogClient
 import com.github.shyiko.mysql.binlog.event._
-import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
 import org.apache.pekko.stream.{Materializer, OverflowStrategy}
@@ -25,7 +25,7 @@ import scala.util.{Failure, Success, Try}
 class MySQLBinlogReader(
   config: DatabaseConfig,
   bufferSize: Int = 1000
-)(implicit mat: Materializer, ec: ExecutionContext) extends BinlogReader with LazyLogging {
+)(implicit mat: Materializer, ec: ExecutionContext) extends BinlogReader with CDCLogging {
 
   private val client = new BinaryLogClient(
     config.host,
@@ -186,7 +186,7 @@ class MySQLBinlogReader(
     val tableId = extractTableId(data.getTableId)
     
     val tableInfo = tableId.map(t => s"${t.database}.${t.table}").getOrElse(s"tableId=${data.getTableId}")
-    logger.info(s"Received INSERT event for $tableInfo, rows: ${data.getRows.size()}")
+    logger.debug(s"Received INSERT event for $tableInfo, rows: ${data.getRows.size()}")
     
     Some(RawBinlogEvent(
       position = currentPosition.get(),
@@ -202,7 +202,7 @@ class MySQLBinlogReader(
     val tableId = extractTableId(data.getTableId)
     
     val tableInfo = tableId.map(t => s"${t.database}.${t.table}").getOrElse(s"tableId=${data.getTableId}")
-    logger.info(s"Received UPDATE event for $tableInfo, rows: ${data.getRows.size()}")
+    logger.debug(s"Received UPDATE event for $tableInfo, rows: ${data.getRows.size()}")
     
     Some(RawBinlogEvent(
       position = currentPosition.get(),
@@ -218,7 +218,7 @@ class MySQLBinlogReader(
     val tableId = extractTableId(data.getTableId)
     
     val tableInfo = tableId.map(t => s"${t.database}.${t.table}").getOrElse(s"tableId=${data.getTableId}")
-    logger.info(s"Received DELETE event for $tableInfo, rows: ${data.getRows.size()}")
+    logger.debug(s"Received DELETE event for $tableInfo, rows: ${data.getRows.size()}")
     
     Some(RawBinlogEvent(
       position = currentPosition.get(),
