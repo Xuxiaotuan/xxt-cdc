@@ -4,19 +4,21 @@ import cn.xuyinyin.cdc.config.DatabaseConfig
 import cn.xuyinyin.cdc.model.BinlogPosition
 import com.typesafe.scalalogging.LazyLogging
 
-import java.sql.{Connection, DriverManager, PreparedStatement, ResultSet}
+import java.sql.{Connection, DriverManager}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try, Using}
 
 /**
  * 基于 MySQL 的偏移量存储实现
- * 使用独立的表存储偏移量信息
+ * 使用独立的元数据库存储偏移量信息，支持多任务共享同一个数据库
  * 
- * @param config 数据库配置
+ * @param config 元数据库配置
+ * @param taskName CDC 任务名称，用于区分不同的任务
  * @param tableName 存储表名
  */
 class MySQLOffsetStore(
   config: DatabaseConfig,
+  taskName: String,
   tableName: String = "cdc_offsets"
 )(implicit ec: ExecutionContext) extends OffsetStore with LazyLogging {
 
@@ -33,10 +35,11 @@ class MySQLOffsetStore(
         val createTableSql =
           s"""
              |CREATE TABLE IF NOT EXISTS $tableName (
-             |  id INT PRIMARY KEY AUTO_INCREMENT,
+             |  task_name VARCHAR(255) NOT NULL,
              |  position_type VARCHAR(20) NOT NULL,
              |  position_value TEXT NOT NULL,
              |  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+             |  PRIMARY KEY (task_name),
              |  INDEX idx_updated_at (updated_at)
              |)
              |""".stripMargin
@@ -45,7 +48,7 @@ class MySQLOffsetStore(
           stmt.execute(createTableSql)
         }
         
-        logger.info(s"Initialized offset table: $tableName")
+        logger.info(s"Initialized offset table: $tableName for task: $taskName")
       }
     } match {
       case Success(_) => ()
@@ -64,8 +67,8 @@ class MySQLOffsetStore(
         // 使用 REPLACE INTO 实现幂等性
         val sql =
           s"""
-             |REPLACE INTO $tableName (id, position_type, position_value)
-             |VALUES (1, ?, ?)
+             |REPLACE INTO $tableName (task_name, position_type, position_value)
+             |VALUES (?, ?, ?)
              |""".stripMargin
         
         Using.resource(conn.prepareStatement(sql)) { stmt =>
@@ -76,17 +79,18 @@ class MySQLOffsetStore(
               ("FILE", s"${pos.filename}:${pos.position}")
           }
           
-          stmt.setString(1, posType)
-          stmt.setString(2, posValue)
+          stmt.setString(1, taskName)
+          stmt.setString(2, posType)
+          stmt.setString(3, posValue)
           stmt.executeUpdate()
         }
         
-        logger.debug(s"Saved offset to MySQL: ${position.asString}")
+        logger.debug(s"Saved offset for task '$taskName': ${position.asString}")
       }
     } match {
       case Success(_) => ()
       case Failure(ex) =>
-        logger.error(s"Failed to save offset to MySQL: ${ex.getMessage}", ex)
+        logger.error(s"Failed to save offset for task '$taskName': ${ex.getMessage}", ex)
         throw ex
     }
   }
@@ -98,13 +102,15 @@ class MySQLOffsetStore(
           s"""
              |SELECT position_type, position_value
              |FROM $tableName
-             |WHERE id = 1
+             |WHERE task_name = ?
              |ORDER BY updated_at DESC
              |LIMIT 1
              |""".stripMargin
         
-        Using.resource(conn.createStatement()) { stmt =>
-          Using.resource(stmt.executeQuery(sql)) { rs =>
+        Using.resource(conn.prepareStatement(sql)) { stmt =>
+          stmt.setString(1, taskName)
+          
+          Using.resource(stmt.executeQuery()) { rs =>
             if (rs.next()) {
               val posType = rs.getString("position_type")
               val posValue = rs.getString("position_value")
@@ -126,10 +132,10 @@ class MySQLOffsetStore(
       }
     } match {
       case Success(position) =>
-        position.foreach(pos => logger.info(s"Loaded offset from MySQL: ${pos.asString}"))
+        position.foreach(pos => logger.info(s"Loaded offset for task '$taskName': ${pos.asString}"))
         position
       case Failure(ex) =>
-        logger.error(s"Failed to load offset from MySQL: ${ex.getMessage}", ex)
+        logger.error(s"Failed to load offset for task '$taskName': ${ex.getMessage}", ex)
         None
     }
   }
@@ -137,18 +143,19 @@ class MySQLOffsetStore(
   override def delete(): Future[Unit] = Future {
     Try {
       Using.resource(getConnection()) { conn =>
-        val sql = s"DELETE FROM $tableName WHERE id = 1"
+        val sql = s"DELETE FROM $tableName WHERE task_name = ?"
         
-        Using.resource(conn.createStatement()) { stmt =>
-          stmt.executeUpdate(sql)
+        Using.resource(conn.prepareStatement(sql)) { stmt =>
+          stmt.setString(1, taskName)
+          stmt.executeUpdate()
         }
         
-        logger.info("Deleted offset from MySQL")
+        logger.info(s"Deleted offset for task '$taskName'")
       }
     } match {
       case Success(_) => ()
       case Failure(ex) =>
-        logger.error(s"Failed to delete offset from MySQL: ${ex.getMessage}", ex)
+        logger.error(s"Failed to delete offset for task '$taskName': ${ex.getMessage}", ex)
         throw ex
     }
   }
@@ -158,8 +165,8 @@ object MySQLOffsetStore {
   /**
    * 创建 MySQL Offset Store 实例
    */
-  def apply(config: DatabaseConfig, tableName: String = "cdc_offsets")
+  def apply(config: DatabaseConfig, taskName: String, tableName: String = "cdc_offsets")
            (implicit ec: ExecutionContext): MySQLOffsetStore = {
-    new MySQLOffsetStore(config, tableName)
+    new MySQLOffsetStore(config, taskName, tableName)
   }
 }

@@ -10,10 +10,9 @@ import cn.xuyinyin.cdc.worker.ApplyWorker
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.stream.scaladsl.{Flow, GraphDSL, Merge, Partition, RunnableGraph, Sink, Source}
 import org.apache.pekko.stream.{ActorAttributes, ClosedShape, Materializer, Supervision}
-import org.apache.pekko.{Done, NotUsed}
+import org.apache.pekko.Done
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.concurrent.duration._
 
 /**
  * CDC Stream Pipeline
@@ -155,6 +154,10 @@ class CDCStreamPipeline(
       logger.error(s"Stream error: ${ex.getMessage}", ex)
       // 继续处理，不中断流
       Supervision.Resume
+    case ex: Throwable =>
+      logger.error(s"Fatal stream error: ${ex.getMessage}", ex)
+      // 致命错误，停止流
+      Supervision.Stop
   }
   
   /**

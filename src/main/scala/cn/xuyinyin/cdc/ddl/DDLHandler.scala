@@ -4,7 +4,6 @@ import cn.xuyinyin.cdc.model.TableId
 import com.typesafe.scalalogging.LazyLogging
 
 import java.time.Instant
-import scala.util.matching.Regex
 
 /**
  * DDL 事件类型

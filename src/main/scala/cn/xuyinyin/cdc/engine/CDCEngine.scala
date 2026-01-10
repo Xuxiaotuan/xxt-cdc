@@ -4,9 +4,9 @@ import cn.xuyinyin.cdc.catalog.{CatalogService, MySQLCatalogService}
 import cn.xuyinyin.cdc.config.CDCConfig
 import cn.xuyinyin.cdc.coordinator.{DefaultOffsetCoordinator, FileOffsetStore, MySQLOffsetStore, OffsetCoordinator, OffsetStore}
 import cn.xuyinyin.cdc.filter.TableFilter
-import cn.xuyinyin.cdc.health.HealthCheck
+import cn.xuyinyin.cdc.health.{HealthCheck, HealthStatus}
 import cn.xuyinyin.cdc.logging.CDCLogging
-import cn.xuyinyin.cdc.metrics.CDCMetrics
+import cn.xuyinyin.cdc.metrics.{CDCMetrics, MetricsSnapshot}
 import cn.xuyinyin.cdc.model._
 import cn.xuyinyin.cdc.normalizer.{EventNormalizer, MySQLEventNormalizer}
 import cn.xuyinyin.cdc.pipeline.CDCStreamPipeline
@@ -97,8 +97,14 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   /** 性能指标日志输出器：定期输出性能指标 */
   private var performanceLogger: Option[cn.xuyinyin.cdc.logging.PerformanceLogger] = None
   
-  /** Snapshot 阶段记录的 High Watermark，用于 Streaming 阶段的起始位置 */
+  /** Snapshot 阶段记录的 Low Watermark，用于 Catchup 阶段的起始位置 */
+  private var snapshotLowWatermark: Option[BinlogPosition] = None
+  
+  /** Snapshot 阶段记录的 High Watermark，用于 Catchup 阶段的结束位置和 Streaming 阶段的起始位置 */
   private var snapshotHighWatermark: Option[BinlogPosition] = None
+  
+  /** Snapshot 阶段需要同步的表列表，用于 Catchup 阶段过滤事件 */
+  private var snapshotTables: Set[TableId] = Set.empty
   
   /**
    * 启动 CDC 引擎
@@ -163,7 +169,7 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
         }
         transitionFuture.flatMap(_ => phase.action())
       }
-      .runWith(org.apache.pekko.stream.scaladsl.Sink.ignore)
+      .runWith(Sink.ignore)
       .map { _ =>
         isRunning = true
         logger.info("CDC Engine started successfully")
@@ -216,16 +222,16 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
    * 获取指标快照
    * @return 包含吞吐量、延迟、错误率等的指标快照
    */
-  def getMetrics(): cn.xuyinyin.cdc.metrics.MetricsSnapshot = metrics.getSnapshot()
+  def getMetrics(): MetricsSnapshot = metrics.getSnapshot()
   
   /**
    * 获取健康状态
    * @return 健康状态，包含状态、问题列表和检查时间
    */
-  def getHealthStatus(): cn.xuyinyin.cdc.health.HealthStatus = {
+  def getHealthStatus(): HealthStatus = {
     healthCheck.map(_.check(getCurrentState(), 1000)).getOrElse(
-      cn.xuyinyin.cdc.health.HealthStatus(
-        cn.xuyinyin.cdc.health.HealthStatus.Warning,
+      HealthStatus(
+        HealthStatus.Warning,
         Seq.empty,
         java.time.Instant.now()
       )
@@ -350,7 +356,7 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   private def initializeOffsetStore(): Future[Unit] = Future {
     offsetStore = Some(config.offset.storeType match {
       case cn.xuyinyin.cdc.config.MySQLOffsetStore =>
-        MySQLOffsetStore(config.target)
+        MySQLOffsetStore(config.metadata, config.taskName)
       case cn.xuyinyin.cdc.config.FileOffsetStore =>
         val path = config.offset.storeConfig.getOrElse("path", "./data/offsets/offset.txt")
         FileOffsetStore(path)
@@ -474,7 +480,12 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
       
       // 2. 记录 Low Watermark
       val lowWatermark = getLatestBinlogPosition()
+      snapshotLowWatermark = Some(lowWatermark)
       logger.info(s"Low Watermark: ${lowWatermark.asString}")
+      
+      // 保存快照表列表，用于 Catchup 阶段过滤
+      snapshotTables = filteredTables.toSet
+      logger.info(s"Snapshot tables: ${snapshotTables.map(_.toString).mkString(", ")}")
       
       // 3. 为每张表执行快照
       val snapshotFutures = filteredTables.map { tableId =>
@@ -501,119 +512,69 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   
   /**
    * 为单个表执行快照
-   * 
-   * @param tableId 表标识
-   * @return Future[Long] 复制的行数
    */
-  private def performTableSnapshot(tableId: TableId): Future[Long] = Future {
-    import java.sql.DriverManager
-    
-    logger.info(s"Starting snapshot for table ${tableId.database}.${tableId.table}")
-    
-    val sourceUrl = s"jdbc:mysql://${config.source.host}:${config.source.port}/${tableId.database}?useSSL=false&allowPublicKeyRetrieval=true"
-    val targetUrl = s"jdbc:mysql://${config.target.host}:${config.target.port}/${config.target.database}?useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true"
-    
-    var sourceConn: java.sql.Connection = null
-    var targetConn: java.sql.Connection = null
-    var rowCount = 0L
-    
-    try {
-      // 连接源数据库
-      sourceConn = DriverManager.getConnection(sourceUrl, config.source.username, config.source.password)
-      sourceConn.setAutoCommit(false)
-      sourceConn.setTransactionIsolation(java.sql.Connection.TRANSACTION_REPEATABLE_READ)
-      
-      // 连接目标数据库
-      targetConn = DriverManager.getConnection(targetUrl, config.target.username, config.target.password)
-      targetConn.setAutoCommit(false)
-      
-      // 查询源表数据
-      val selectSql = s"SELECT * FROM `${tableId.table}`"
-      val selectStmt = sourceConn.createStatement()
-      selectStmt.setFetchSize(1000) // 流式读取
-      val rs = selectStmt.executeQuery(selectSql)
-      
-      // 获取列信息
-      val metaData = rs.getMetaData
-      val columnCount = metaData.getColumnCount
-      val columnNames = (1 to columnCount).map(metaData.getColumnName).mkString(", ")
-      val placeholders = (1 to columnCount).map(_ => "?").mkString(", ")
-      
-      // 准备插入语句（使用 REPLACE INTO 实现幂等）
-      val insertSql = s"REPLACE INTO `${tableId.table}` ($columnNames) VALUES ($placeholders)"
-      val insertStmt = targetConn.prepareStatement(insertSql)
-      
-      // 批量插入
-      val batchSize = config.parallelism.batchSize
-      var batchCount = 0
-      
-      while (rs.next()) {
-        // 设置参数
-        for (i <- 1 to columnCount) {
-          insertStmt.setObject(i, rs.getObject(i))
-        }
-        insertStmt.addBatch()
-        batchCount += 1
-        rowCount += 1
-        
-        // 执行批量插入
-        if (batchCount >= batchSize) {
-          insertStmt.executeBatch()
-          targetConn.commit()
-          batchCount = 0
-          
-          if (rowCount % 10000 == 0) {
-            val percentage = if (rowCount > 0) f"${(rowCount.toDouble / rowCount * 100)}%.1f" else "0.0"
-            logger.info(s"Snapshot progress for ${tableId.table}: $rowCount rows ($percentage%)")
-          }
-        }
-      }
-      
-      // 执行剩余的批量
-      if (batchCount > 0) {
-        insertStmt.executeBatch()
-        targetConn.commit()
-      }
-      
-      logger.info(s"Snapshot completed for table ${tableId.database}.${tableId.table}: $rowCount rows")
-      rowCount
-      
-    } catch {
-      case ex: Exception =>
-        logger.error(s"Failed to snapshot table ${tableId.database}.${tableId.table}: ${ex.getMessage}", ex)
-        if (targetConn != null) {
-          try {
-            targetConn.rollback()
-          } catch {
-            case _: Exception => // 忽略回滚错误
-          }
-        }
-        throw ex
-    } finally {
-      if (sourceConn != null) try { sourceConn.close() } catch { case _: Exception => }
-      if (targetConn != null) try { targetConn.close() } catch { case _: Exception => }
-    }
+  private def performTableSnapshot(tableId: TableId): Future[Long] = {
+    CDCEngineUtils.performTableSnapshot(tableId, config)
   }
   
   /**
    * 执行 Catchup 阶段
    * 
-   * 当前为简化实现，直接跳过。
-   * 
-   * 完整实现应该：
-   * 1. 获取每张表的 Low Watermark
-   * 2. 从 Low Watermark 开始读取 binlog
-   * 3. 过滤目标表的事件
-   * 4. 应用到目标数据库
-   * 5. 追赶到 High Watermark
-   * 
-   * 参考 CDCEngineWithSnapshot 和 CatchupProcessor 获取完整实现。
+   * 从 Low Watermark 追赶到 High Watermark，处理快照期间产生的增量变更：
+   * 1. 验证 Low 和 High Watermark 是否存在
+   * 2. 检查是否需要 catchup（Low < High）
+   * 3. 从 Low Watermark 开始读取 binlog
+   * 4. 过滤快照表的事件
+   * 5. 应用到目标数据库
+   * 6. 追赶到 High Watermark
    * 
    * @return Future[Unit] Catchup 完成的 Future
    */
   private def performCatchup(): Future[Unit] = {
-    logger.info("Performing catchup phase (simplified - skipping)")
-    Future.successful(())
+    logger.info("Starting catchup phase")
+    
+    (snapshotLowWatermark, snapshotHighWatermark) match {
+      case (Some(lowWm), Some(highWm)) =>
+        // 比较 Low 和 High Watermark
+        if (lowWm.compare(highWm) >= 0) {
+          logger.info("Low watermark >= High watermark, no catchup needed")
+          Future.successful(())
+        } else {
+          logger.info(s"Catchup range: ${lowWm.asString} → ${highWm.asString}")
+          logger.info(s"Catchup will process ${snapshotTables.size} tables: ${snapshotTables.map(_.toString).mkString(", ")}")
+          performCatchupRange(lowWm, highWm)
+        }
+      case (None, _) =>
+        logger.warn("No low watermark found, skipping catchup phase")
+        Future.successful(())
+      case (_, None) =>
+        logger.warn("No high watermark found, skipping catchup phase")
+        Future.successful(())
+    }
+  }
+  
+  /**
+   * 执行指定范围的 Catchup 处理
+   */
+  private def performCatchupRange(lowWatermark: BinlogPosition, highWatermark: BinlogPosition): Future[Unit] = {
+    CDCEngineUtils.performCatchupRange(
+      lowWatermark,
+      highWatermark,
+      snapshotTables,
+      config,
+      eventNormalizer.get,
+      eventRouter.get,
+      applyWorkers
+    ).andThen {
+      case Success(_) =>
+        // 清理 watermark 状态，为下次 snapshot 做准备
+        snapshotLowWatermark = None
+        snapshotTables = Set.empty
+      case Failure(_) =>
+        // 即使失败也清理状态
+        snapshotLowWatermark = None
+        snapshotTables = Set.empty
+    }
   }
   
   /**
@@ -683,76 +644,9 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   
   /**
    * 获取最新的 binlog 位置
-   * 通过查询 MySQL 的 SHOW BINARY LOG STATUS 或 SHOW MASTER STATUS 获取当前最新的 binlog 文件和位置
-   * 支持 MySQL 8.2+ 的新语法和旧版本的兼容性
    */
   private def getLatestBinlogPosition(): FilePosition = {
-    import java.sql.{DriverManager, SQLException}
-    
-    val url = s"jdbc:mysql://${config.source.host}:${config.source.port}/${config.source.database}?useSSL=false&allowPublicKeyRetrieval=true"
-    
-    var conn: java.sql.Connection = null
-    try {
-      conn = DriverManager.getConnection(url, config.source.username, config.source.password)
-      
-      // 尝试新语法（MySQL 8.2+）
-      val position = try {
-        val stmt = conn.createStatement()
-        val rs = stmt.executeQuery("SHOW BINARY LOG STATUS")
-        
-        if (rs.next()) {
-          val filename = rs.getString("File")
-          val pos = rs.getLong("Position")
-          logger.info(s"Latest binlog position (BINARY LOG STATUS): $filename:$pos")
-          Some(FilePosition(filename, pos))
-        } else {
-          None
-        }
-      } catch {
-        case _: SQLException =>
-          // 新语法失败，尝试旧语法
-          logger.debug("SHOW BINARY LOG STATUS not supported, trying SHOW MASTER STATUS")
-          None
-      }
-      
-      // 如果新语法失败，尝试旧语法（MySQL 5.x - 8.1）
-      position.getOrElse {
-        try {
-          val stmt = conn.createStatement()
-          val rs = stmt.executeQuery("SHOW MASTER STATUS")
-          
-          if (rs.next()) {
-            val filename = rs.getString("File")
-            val pos = rs.getLong("Position")
-            logger.info(s"Latest binlog position (MASTER STATUS): $filename:$pos")
-            FilePosition(filename, pos)
-          } else {
-            logger.warn("No binlog status found, falling back to default position")
-            FilePosition("mysql-bin.000001", 4L)
-          }
-        } catch {
-          case ex: SQLException =>
-            logger.error(s"Failed to get binlog position: ${ex.getMessage}. Check if binlog is enabled and user has REPLICATION CLIENT privilege.")
-            logger.warn("Falling back to default position: mysql-bin.000001:4")
-            FilePosition("mysql-bin.000001", 4L)
-        }
-      }
-      
-    } catch {
-      case ex: Exception =>
-        logger.error(s"Failed to connect to MySQL: ${ex.getMessage}", ex)
-        logger.warn("Falling back to default position: mysql-bin.000001:4")
-        FilePosition("mysql-bin.000001", 4L)
-    } finally {
-      if (conn != null) {
-        try {
-          conn.close()
-        } catch {
-          case ex: Exception =>
-            logger.warn(s"Failed to close connection: ${ex.getMessage}")
-        }
-      }
-    }
+    CDCEngineUtils.getLatestBinlogPosition(config)
   }
   
   /**

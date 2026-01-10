@@ -4,10 +4,10 @@ import cn.xuyinyin.cdc.model.{BinlogPosition, TableId}
 import cn.xuyinyin.cdc.reader.BinlogReader
 import com.typesafe.scalalogging.LazyLogging
 
-import java.sql.{Connection, DriverManager, PreparedStatement, ResultSet}
+import java.sql.{DriverManager, ResultSet}
 import java.time.Instant
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Success, Try, Using}
+import scala.util.Using
 
 /**
  * Low Watermark 记录

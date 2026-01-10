@@ -44,21 +44,25 @@ object ConfigLoader extends LazyLogging {
     try {
       val cdcConfig = config.getConfig("cdc")
       
+      val taskName = cdcConfig.getString("task-name")
       val sourceConfig = loadDatabaseConfig(cdcConfig.getConfig("source"))
       val targetConfig = loadDatabaseConfig(cdcConfig.getConfig("target"))
+      val metadataConfig = loadDatabaseConfig(cdcConfig.getConfig("metadata"))
       val filterConfig = loadFilterConfig(cdcConfig.getConfig("filter"))
       val parallelismConfig = loadParallelismConfig(cdcConfig.getConfig("parallelism"))
       val offsetConfig = loadOffsetConfig(cdcConfig.getConfig("offset"))
       
       val result = CDCConfig(
+        taskName = taskName,
         source = sourceConfig,
         target = targetConfig,
+        metadata = metadataConfig,
         filter = filterConfig,
         parallelism = parallelismConfig,
         offset = offsetConfig
       )
       
-      logger.info("CDC configuration loaded successfully")
+      logger.info(s"CDC configuration loaded successfully for task: $taskName")
       result
       
     } catch {
@@ -145,9 +149,15 @@ object ConfigValidator extends LazyLogging {
     val errors = scala.collection.mutable.ListBuffer[String]()
     val warnings = scala.collection.mutable.ListBuffer[String]()
     
+    // 验证任务名称
+    if (config.taskName.isEmpty) {
+      errors += "Task name cannot be empty"
+    }
+    
     // 验证数据库配置
     validateDatabaseConfig("source", config.source, errors, warnings)
     validateDatabaseConfig("target", config.target, errors, warnings)
+    validateDatabaseConfig("metadata", config.metadata, errors, warnings)
     
     // 验证并行度配置
     validateParallelismConfig(config.parallelism, errors, warnings)

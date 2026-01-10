@@ -1,7 +1,6 @@
 package cn.xuyinyin.cdc.ddl
 
 import cn.xuyinyin.cdc.model.{BinlogPosition, ChangeEvent, Insert, TableId}
-import cn.xuyinyin.cdc.normalizer.EventNormalizer
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Flow

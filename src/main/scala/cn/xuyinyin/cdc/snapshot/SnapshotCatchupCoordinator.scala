@@ -2,16 +2,13 @@ package cn.xuyinyin.cdc.snapshot
 
 import cn.xuyinyin.cdc.catalog.CatalogService
 import cn.xuyinyin.cdc.model.{BinlogPosition, TableId}
-import cn.xuyinyin.cdc.normalizer.EventNormalizer
 import cn.xuyinyin.cdc.reader.BinlogReader
-import cn.xuyinyin.cdc.sink.MySQLSink
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.actor.typed.ActorSystem
 
 import java.time.Instant
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Success}
 
 /**
  * 快照-Catchup 协调状态

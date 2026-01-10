@@ -3,13 +3,12 @@ package cn.xuyinyin.cdc.snapshot
 import cn.xuyinyin.cdc.model.{BinlogPosition, TableId}
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
-import org.apache.pekko.actor.typed.{ActorRef, ActorSystem, Behavior}
+import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
-import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Success}
 
 /**
  * 快照任务状态
@@ -157,8 +156,6 @@ object SnapshotScheduler extends LazyLogging {
   ): Behavior[SnapshotSchedulerMessage] = {
     
     Behaviors.receive { (context, message) =>
-      implicit val ec: ExecutionContext = context.executionContext
-      
       message match {
         case ScheduleSnapshot(tableId, lowWatermark, replyTo) =>
           val taskId = generateTaskId()

@@ -3,7 +3,6 @@ package cn.xuyinyin.cdc.reader
 import cn.xuyinyin.cdc.model.{BinlogPosition, TableId}
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
-import org.apache.pekko.util.ByteString
 
 import java.time.Instant
 

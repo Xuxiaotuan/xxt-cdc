@@ -124,14 +124,39 @@ class CDCManagementAPI(
         // 健康检查
         path("health") {
           get {
-            complete(getHealthStatus())
+            val healthStatus = cdcEngine.getHealthStatus()
+            val json = Map[String, Any](
+              "status" -> healthStatus.status.toString,
+              "timestamp" -> healthStatus.timestamp.toString,
+              "checks" -> healthStatus.checks.map(check => Map[String, Any](
+                "name" -> check.name,
+                "status" -> check.status.toString,
+                "message" -> check.message
+              ))
+            ).toJson
+            
+            val statusCode = healthStatus.status match {
+              case cn.xuyinyin.cdc.health.HealthStatus.Healthy => StatusCodes.OK
+              case cn.xuyinyin.cdc.health.HealthStatus.Warning => StatusCodes.OK
+              case cn.xuyinyin.cdc.health.HealthStatus.Unhealthy => StatusCodes.ServiceUnavailable
+              case _ => StatusCodes.OK
+            }
+            
+            complete(statusCode, HttpEntity(ContentTypes.`application/json`, json.prettyPrint))
           }
         },
         
         // 系统状态
         path("status") {
           get {
-            complete(getSystemStatus())
+            val state = cdcEngine.getCurrentState()
+            val json = Map[String, Any](
+              "state" -> state.name,
+              "isRunning" -> true,
+              "uptime" -> System.currentTimeMillis()
+            ).toJson
+            
+            complete(HttpEntity(ContentTypes.`application/json`, json.prettyPrint))
           }
         },
         
@@ -175,37 +200,6 @@ class CDCManagementAPI(
     pathSingleSlash {
       redirect("/api/v1/health", StatusCodes.MovedPermanently)
     }
-  }
-
-  private def getHealthStatus(): HttpEntity.Strict = {
-    val healthStatus = cdcEngine.getHealthStatus()
-    val json = Map[String, Any](
-      "status" -> healthStatus.status.toString,
-      "timestamp" -> healthStatus.timestamp.toString,
-      "checks" -> healthStatus.checks.map(check => Map[String, Any](
-        "name" -> check.name,
-        "status" -> check.status.toString,
-        "message" -> check.message
-      ))
-    ).toJson
-    
-    val statusCode = healthStatus.status match {
-      case cn.xuyinyin.cdc.health.HealthStatus.Healthy => StatusCodes.OK
-      case cn.xuyinyin.cdc.health.HealthStatus.Warning => StatusCodes.OK
-      case cn.xuyinyin.cdc.health.HealthStatus.Unhealthy => StatusCodes.ServiceUnavailable
-    }
-    
-    HttpEntity(ContentTypes.`application/json`, json.prettyPrint)
-  }
-
-  private def getSystemStatus(): HttpEntity.Strict = {
-    val status = Map[String, Any](
-      "state" -> cdcEngine.getCurrentState().name,
-      "uptime" -> cdcEngine.getMetrics().uptime.toSeconds,
-      "version" -> "0.1.0-SNAPSHOT"
-    ).toJson
-    
-    HttpEntity(ContentTypes.`application/json`, status.prettyPrint)
   }
 
   private def getMetrics(): HttpEntity.Strict = {

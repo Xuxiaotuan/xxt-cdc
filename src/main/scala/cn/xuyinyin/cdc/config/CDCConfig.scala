@@ -5,15 +5,19 @@ import scala.concurrent.duration.FiniteDuration
 /**
  * CDC 引擎配置
  * 
+ * @param taskName CDC 任务名称，用于区分不同的 CDC 任务
  * @param source 源数据库配置
  * @param target 目标数据库配置
+ * @param metadata 元数据库配置，用于存储 CDC 偏移量等元数据
  * @param filter 表过滤配置
  * @param parallelism 并行度配置
  * @param offset 偏移量配置
  */
 case class CDCConfig(
+  taskName: String,
   source: DatabaseConfig,
   target: DatabaseConfig,
+  metadata: DatabaseConfig,
   filter: FilterConfig,
   parallelism: ParallelismConfig,
   offset: OffsetConfig

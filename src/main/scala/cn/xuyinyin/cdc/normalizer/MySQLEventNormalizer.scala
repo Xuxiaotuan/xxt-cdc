@@ -7,7 +7,7 @@ import com.github.shyiko.mysql.binlog.event.{DeleteRowsEventData, UpdateRowsEven
 import com.typesafe.scalalogging.LazyLogging
 
 import java.time.Instant
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.ExecutionContext
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
@@ -165,7 +165,7 @@ class MySQLEventNormalizer(
     schemaCache.getOrElseUpdate(tableId, {
       // 同步获取表结构（实际应该异步处理）
       import scala.concurrent.Await
-      import scala.concurrent.duration._
+        import scala.concurrent.duration._
       Await.result(catalogService.getTableSchema(tableId), 10.seconds)
     })
   }

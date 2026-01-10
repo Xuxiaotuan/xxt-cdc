@@ -1,15 +1,15 @@
 package cn.xuyinyin.cdc.snapshot
 
 import cn.xuyinyin.cdc.catalog.CatalogService
-import cn.xuyinyin.cdc.model.{BinlogPosition, ChangeEvent, Insert, TableId}
+import cn.xuyinyin.cdc.model.TableId
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 
-import java.sql.{Connection, DriverManager, ResultSet}
+import java.sql.DriverManager
 import java.time.Instant
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Success, Try, Using}
+import scala.util.{Failure, Success, Using}
 
 /**
  * 快照结果

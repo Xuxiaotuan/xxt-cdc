@@ -1,6 +1,6 @@
 package cn.xuyinyin.cdc.ddl
 
-import cn.xuyinyin.cdc.model.{BinlogPosition, TableId}
+import cn.xuyinyin.cdc.model.TableId
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, ActorSystem, Behavior}
@@ -8,7 +8,6 @@ import org.apache.pekko.actor.typed.{ActorRef, ActorSystem, Behavior}
 import java.time.Instant
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Success}
 
 /**
  * DDL 事件监听器消息
@@ -103,8 +102,6 @@ object DDLEventListener extends LazyLogging {
   ): Behavior[DDLEventListenerMessage] = {
     
     Behaviors.receive { (context, message) =>
-      implicit val ec: ExecutionContext = context.executionContext
-      
       message match {
         case RegisterDDLListener(tableId, listener) =>
           logger.info(s"Registering DDL listener for table filter: ${tableId.getOrElse("all tables")}")
@@ -336,9 +333,7 @@ object DDLEventProcessor {
   def withConfig(
     config: DDLProcessingConfig
   )(implicit system: ActorSystem[_]): DDLEventProcessor = {
-    
-    implicit val ec: ExecutionContext = system.executionContext
-    
+
     val ddlHandler = new DDLHandler(config.strategy)
     val alertManager = new DDLAlertManager()
     

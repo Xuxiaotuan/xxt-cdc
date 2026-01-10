@@ -1,15 +1,15 @@
 package cn.xuyinyin.cdc.snapshot
 
-import cn.xuyinyin.cdc.model.{BinlogPosition, ChangeEvent, Delete, Insert, TableId, Update}
+import cn.xuyinyin.cdc.model._
 import cn.xuyinyin.cdc.normalizer.EventNormalizer
 import cn.xuyinyin.cdc.reader.{BinlogReader, RawBinlogEvent}
 import cn.xuyinyin.cdc.sink.MySQLSink
 import com.typesafe.scalalogging.LazyLogging
-import org.apache.pekko.{Done, NotUsed}
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, ActorSystem, Behavior}
 import org.apache.pekko.stream.scaladsl.{Flow, Sink, Source}
 import org.apache.pekko.stream.{KillSwitches, SharedKillSwitch}
+import org.apache.pekko.{Done, NotUsed}
 
 import java.time.Instant
 import scala.concurrent.duration._

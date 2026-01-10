@@ -11,9 +11,10 @@
 - ✅ **编译**: 成功 (`sbt compile`)
 - ⚠️ **测试**: 0 通过 / 0 失败（测试套件开发中）
 - ⚠️ **警告**: 84 个（主要：未使用导入/变量，不影响功能）
-- 🚧 **Snapshot/Catchup**: 实验性（代码已实现但未充分测试，**不建议生产启用**）
+- ✅ **Snapshot**: 已实现（全量数据同步）
+- ✅ **Catchup**: 已实现（高低水位线算法，增量追赶）
 
-> **重要**: 核心 CDC 功能已实现并可用。Snapshot/Catchup 功能有代码实现，但未经充分测试，生产环境建议设置 `offset.enable-snapshot = false`。
+> **重要**: 核心 CDC 功能已实现并可用。Snapshot/Catchup 功能已完整实现，包括高低水位线算法，建议在测试环境充分验证后再用于生产。
 
 ## 🎯 核心功能状态
 
@@ -28,8 +29,8 @@
 | 表过滤 | ✅ 已实现 | 支持正则/通配符 |
 | DDL 处理 | ✅ 检测/告警 | 仅检测，不自动同步 |
 | 监控 API | ✅ 已实现 | /health, /status, /metrics |
-| Snapshot | 🚧 实验性 | 代码已实现，但未充分测试，不建议生产使用 |
-| Catchup | 🚧 简化实现 | 基础实现，未充分测试，不建议生产使用 |
+| Snapshot | ✅ 已实现 | 全量数据同步，支持大表分片 |
+| Catchup | ✅ 已实现 | 完整的高低水位线算法 |
 
 ## 🚀 快速开始
 
@@ -59,7 +60,16 @@ CREATE USER 'cdc_user'@'%' IDENTIFIED BY 'your_password';
 GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'cdc_user'@'%';
 GRANT SELECT ON source_db.* TO 'cdc_user'@'%';
 GRANT INSERT, UPDATE, DELETE ON target_db.* TO 'cdc_user'@'%';
+
+-- 授予元数据库权限（用于存储 CDC 偏移量）
+GRANT ALL PRIVILEGES ON xxt_cdc.* TO 'cdc_user'@'%';
+
 FLUSH PRIVILEGES;
+
+-- 创建元数据库
+CREATE DATABASE IF NOT EXISTS xxt_cdc 
+  CHARACTER SET utf8mb4 
+  COLLATE utf8mb4_unicode_ci;
 ```
 
 **3. 环境要求**
@@ -74,6 +84,9 @@ FLUSH PRIVILEGES;
 
 ```hocon
 cdc {
+  # CDC 任务名称（用于区分不同的任务）
+  task-name = "my-cdc-task"
+
   source {
     host = "localhost"
     port = 3306
@@ -96,6 +109,21 @@ cdc {
     connection-pool {
       max-pool-size = 20
       min-idle = 5
+      connection-timeout = 30s
+    }
+  }
+
+  # 元数据库配置（用于存储 CDC 偏移量等元数据）
+  # 与业务数据分离，多个任务可共享同一个元数据库
+  metadata {
+    host = "localhost"
+    port = 3306
+    username = "cdc_user"
+    password = "${DB_PASS}"
+    database = "xxt_cdc"  # 元数据库名称
+    connection-pool {
+      max-pool-size = 5
+      min-idle = 1
       connection-timeout = 30s
     }
   }
@@ -156,8 +184,12 @@ java -Xmx2G -Xms1G \
 
 ## ⚙️ 配置说明
 
+### 核心配置项
+
 | 配置项 | 类型 | 默认值 | 说明 | 常见取值 |
 |--------|------|--------|------|----------|
+| `task-name` | String | default-cdc-task | CDC 任务名称 | my-cdc-task |
+| `metadata.database` | String | xxt_cdc | 元数据库名称 | xxt_cdc |
 | `parallelism.partition-count` | Int | 64 | 路由分区数，决定并行度 | 16-128 |
 | `parallelism.apply-worker-count` | Int | 8 | 应用工作线程数 | 4-32 |
 | `parallelism.batch-size` | Int | 100 | 批处理大小 | 50-1000 |
@@ -168,6 +200,43 @@ java -Xmx2G -Xms1G \
 | `offset.enable-snapshot` | Boolean | false | 是否启用快照（⚠️未完成） | **必须 false** |
 | `filter.include-table-patterns` | Array | [] | 包含表（支持正则/通配符） | ["users", "order.*"] |
 | `filter.exclude-table-patterns` | Array | [] | 排除表（支持正则/通配符） | ["temp_.*", ".*_bak"] |
+
+### 元数据库配置说明
+
+**为什么需要独立的元数据库？**
+
+1. **数据分离**：元数据（偏移量）与业务数据分离，不污染源数据库
+2. **多任务共享**：多个 CDC 任务可以共享同一个元数据库，通过 `task-name` 区分
+3. **Binlog 清洁**：不会在源库 binlog 中产生 DDL 事件和警告
+4. **统一管理**：所有 CDC 任务的元数据集中存储，便于监控和管理
+
+**元数据库表结构：**
+```sql
+CREATE TABLE cdc_offsets (
+  task_name VARCHAR(255) NOT NULL,      -- 任务名称
+  position_type VARCHAR(20) NOT NULL,   -- 位置类型（FILE/GTID）
+  position_value TEXT NOT NULL,         -- 位置值
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (task_name),
+  INDEX idx_updated_at (updated_at)
+);
+```
+
+**多任务示例：**
+```sql
+-- 查看所有任务的偏移量
+SELECT * FROM xxt_cdc.cdc_offsets;
+
++--------------+---------------+-------------------------+---------------------+
+| task_name    | position_type | position_value          | updated_at          |
++--------------+---------------+-------------------------+---------------------+
+| user-sync    | FILE          | binlog.000012:38592408  | 2026-01-10 16:17:03 |
+| order-sync   | FILE          | binlog.000015:12345678  | 2026-01-10 16:20:15 |
+| product-sync | FILE          | binlog.000018:98765432  | 2026-01-10 16:25:30 |
++--------------+---------------+-------------------------+---------------------+
+```
+
+详细说明见 [元数据库改进文档](docs/METADATA_DATABASE_IMPROVEMENT.md)
 
 ## 🏗️ 架构设计
 
@@ -628,6 +697,7 @@ location /api/ {
 - [运维指南](docs/OPERATIONS.md)
 - [故障排查](docs/TROUBLESHOOTING.md)
 - [示例配置](docs/EXAMPLES.md)
+- [元数据库改进](docs/METADATA_DATABASE_IMPROVEMENT.md) ⭐ 新增
 
 ## 🔄 版本兼容性
 

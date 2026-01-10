@@ -4,10 +4,9 @@ import cn.xuyinyin.cdc.config.{DatabaseConfig, FilterConfig}
 import cn.xuyinyin.cdc.model._
 import com.typesafe.scalalogging.LazyLogging
 
-import java.sql.{Connection, DriverManager, ResultSet}
+import java.sql.{Connection, DriverManager}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try, Using}
-import scala.util.matching.Regex
 
 /**
  * MySQL Catalog Service 实现

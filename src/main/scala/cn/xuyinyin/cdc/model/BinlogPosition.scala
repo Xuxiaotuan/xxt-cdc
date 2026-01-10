@@ -6,6 +6,23 @@ package cn.xuyinyin.cdc.model
  */
 sealed trait BinlogPosition {
   def asString: String
+  
+  /**
+   * 比较两个 binlog 位置
+   * @return 负数表示 this < that，0 表示相等，正数表示 this > that
+   */
+  def compare(that: BinlogPosition): Int = {
+    (this, that) match {
+      case (FilePosition(f1, p1), FilePosition(f2, p2)) =>
+        val fileCompare = f1.compareTo(f2)
+        if (fileCompare != 0) fileCompare else p1.compareTo(p2)
+      case (GTIDPosition(g1), GTIDPosition(g2)) =>
+        g1.compareTo(g2) // 简化比较，实际应该解析 GTID 集合
+      case _ =>
+        // 不同类型的位置无法比较，返回 0
+        0
+    }
+  }
 }
 
 /**

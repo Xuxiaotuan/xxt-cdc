@@ -10,7 +10,6 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
-import scala.util.{Failure, Success, Try}
 
 /**
  * Prometheus 指标收集器
@@ -202,20 +201,23 @@ class PrometheusMetrics(
       }
     }
   }
-  
+
   /**
-   * 停止 HTTP 服务器
+   * 停止 Prometheus 指标 HTTP 服务器
    */
   def stopHttpServer(): Unit = {
     httpServer.foreach { server =>
       try {
-        server.stop()
-        logger.info("Prometheus metrics server stopped")
+        // 使用推荐的新方法 `close()` 替代已弃用的 `stop()` 方法
+        server.close()
+        // 只有在未抛出异常时才打印成功日志
+        logger.info("Prometheus metrics HTTP server stopped successfully")
       } catch {
         case ex: Exception =>
           logger.error(s"Error stopping Prometheus HTTP server: ${ex.getMessage}", ex)
       }
     }
+    // 无论停止成功与否，都清空引用，允许资源被GC回收
     httpServer = None
   }
   

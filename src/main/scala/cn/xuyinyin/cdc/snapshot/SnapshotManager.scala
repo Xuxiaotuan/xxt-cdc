@@ -10,7 +10,6 @@ import org.apache.pekko.util.Timeout
 import java.time.Instant
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Success}
 
 /**
  * 快照管理器

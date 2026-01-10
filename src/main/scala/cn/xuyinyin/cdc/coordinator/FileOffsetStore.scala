@@ -4,7 +4,7 @@ import cn.xuyinyin.cdc.model.BinlogPosition
 import com.typesafe.scalalogging.LazyLogging
 
 import java.io.{File, PrintWriter}
-import java.nio.file.{Files, Paths, StandardCopyOption}
+import java.nio.file.{Files, StandardCopyOption}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.io.Source
 import scala.util.{Failure, Success, Try, Using}

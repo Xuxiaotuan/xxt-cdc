@@ -24,6 +24,17 @@ case class ChangeEvent(
 )
 
 /**
+ * 路由后的事件
+ * 
+ * @param event 变更事件
+ * @param partition 分区号
+ */
+case class RoutedEvent(
+  event: ChangeEvent,
+  partition: Int
+)
+
+/**
  * 操作类型
  */
 sealed trait Operation

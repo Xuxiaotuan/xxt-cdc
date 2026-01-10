@@ -6,7 +6,8 @@ import java.sql.{SQLException, SQLTransientException}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Random, Success, Try}
+import scala.util.{Failure, Success, Try}
+import scala.util.Random
 
 /**
  * CDC 错误分类
@@ -125,8 +126,7 @@ class ErrorHandler extends LazyLogging {
   
   private def classifySQLException(ex: SQLException, context: ErrorContext): CDCError = {
     val errorCode = ex.getErrorCode
-    val sqlState = ex.getSQLState
-    
+
     errorCode match {
       // MySQL 连接相关错误
       case 1040 => // Too many connections

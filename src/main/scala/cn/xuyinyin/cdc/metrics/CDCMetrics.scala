@@ -194,7 +194,6 @@ case class MetricsSnapshot(
    */
   def toJson: String = {
     import spray.json._
-    import DefaultJsonProtocol._
     
     val jsonMap: Map[String, JsValue] = toMap.map {
       case (k, v: String) => k -> JsString(v)

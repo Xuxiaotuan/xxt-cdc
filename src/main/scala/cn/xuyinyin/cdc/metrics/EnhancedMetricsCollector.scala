@@ -4,9 +4,8 @@ import cn.xuyinyin.cdc.model.{BinlogPosition, TableId}
 import com.typesafe.scalalogging.LazyLogging
 
 import java.time.Instant
-import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.{ConcurrentHashMap, ScheduledExecutorService, ScheduledFuture, TimeUnit}
-import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
 
