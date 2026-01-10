@@ -6,7 +6,6 @@ import cn.xuyinyin.cdc.reader.{DeleteRowsEvent, RawBinlogEvent, UpdateRowsEvent,
 import com.github.shyiko.mysql.binlog.event.{DeleteRowsEventData, UpdateRowsEventData, WriteRowsEventData}
 import com.typesafe.scalalogging.LazyLogging
 
-import java.io.{ByteArrayInputStream, ObjectInputStream}
 import java.time.Instant
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
@@ -17,15 +16,32 @@ import scala.util.{Failure, Success, Try}
  * 将原始 binlog 事件转换为标准化的 ChangeEvent
  * 
  * @param catalogService Catalog 服务，用于获取表元数据
+ * @param sourceDatabase 源数据库名称，用于过滤事件
  */
 class MySQLEventNormalizer(
-  catalogService: CatalogService
+  catalogService: CatalogService,
+  sourceDatabase: String
 )(implicit ec: ExecutionContext) extends EventNormalizer with LazyLogging {
 
   // 缓存表结构信息
   private val schemaCache = scala.collection.concurrent.TrieMap[TableId, TableSchema]()
   
   override def normalize(rawEvent: RawBinlogEvent): Option[ChangeEvent] = {
+    // 过滤：只处理源数据库的表
+    rawEvent.tableId match {
+      case Some(tableId) if tableId.database != sourceDatabase =>
+        logger.debug(s"Skipping event from non-source database: ${tableId.database}.${tableId.table}")
+        return None
+      case None =>
+        logger.debug("Skipping event without table ID")
+        return None
+      case _ => // 继续处理
+    }
+    
+    // 记录事件详情
+    val tableInfo = rawEvent.tableId.map(t => s"${t.database}.${t.table}").getOrElse("unknown")
+    logger.info(s"Processing ${rawEvent.eventType} event for table: $tableInfo at position: ${rawEvent.position.asString}")
+    
     rawEvent.eventType match {
       case WriteRowsEvent =>
         normalizeInsertEvent(rawEvent)
@@ -44,7 +60,7 @@ class MySQLEventNormalizer(
   
   private def normalizeInsertEvent(rawEvent: RawBinlogEvent): Option[ChangeEvent] = {
     Try {
-      val data = deserializeEventData[WriteRowsEventData](rawEvent.rawData)
+      val data = rawEvent.rawData.asInstanceOf[WriteRowsEventData]
       val tableId = rawEvent.tableId.getOrElse(return None)
       
       // 获取表结构
@@ -78,7 +94,7 @@ class MySQLEventNormalizer(
   
   private def normalizeUpdateEvent(rawEvent: RawBinlogEvent): Option[ChangeEvent] = {
     Try {
-      val data = deserializeEventData[UpdateRowsEventData](rawEvent.rawData)
+      val data = rawEvent.rawData.asInstanceOf[UpdateRowsEventData]
       val tableId = rawEvent.tableId.getOrElse(return None)
       
       // 获取表结构
@@ -113,7 +129,7 @@ class MySQLEventNormalizer(
   
   private def normalizeDeleteEvent(rawEvent: RawBinlogEvent): Option[ChangeEvent] = {
     Try {
-      val data = deserializeEventData[DeleteRowsEventData](rawEvent.rawData)
+      val data = rawEvent.rawData.asInstanceOf[DeleteRowsEventData]
       val tableId = rawEvent.tableId.getOrElse(return None)
       
       // 获取表结构
@@ -142,18 +158,6 @@ class MySQLEventNormalizer(
       case Failure(ex) =>
         logger.error(s"Failed to normalize DELETE event: ${ex.getMessage}", ex)
         None
-    }
-  }
-  
-  private def deserializeEventData[T](data: org.apache.pekko.util.ByteString): T = {
-    // 简单的反序列化实现
-    // 实际应该使用更高效的方式
-    val bytes = data.toArray
-    val ois = new ObjectInputStream(new ByteArrayInputStream(bytes))
-    try {
-      ois.readObject().asInstanceOf[T]
-    } finally {
-      ois.close()
     }
   }
   
@@ -256,8 +260,8 @@ object MySQLEventNormalizer {
   /**
    * 创建 Event Normalizer 实例
    */
-  def apply(catalogService: CatalogService)
+  def apply(catalogService: CatalogService, sourceDatabase: String)
            (implicit ec: ExecutionContext): MySQLEventNormalizer = {
-    new MySQLEventNormalizer(catalogService)
+    new MySQLEventNormalizer(catalogService, sourceDatabase)
   }
 }

@@ -40,14 +40,14 @@ trait BinlogReader {
  * @param timestamp 事件时间戳
  * @param eventType 事件类型
  * @param tableId 表标识（如果是表相关事件）
- * @param rawData 原始数据
+ * @param rawData 原始事件数据对象
  */
 case class RawBinlogEvent(
   position: BinlogPosition,
   timestamp: Instant,
   eventType: BinlogEventType,
   tableId: Option[TableId],
-  rawData: ByteString
+  rawData: Any
 )
 
 /**
@@ -61,3 +61,4 @@ case object QueryEvent extends BinlogEventType
 case object RotateEvent extends BinlogEventType
 case object FormatDescriptionEvent extends BinlogEventType
 case object XidEvent extends BinlogEventType
+case object TableMapEvent extends BinlogEventType

@@ -89,11 +89,15 @@ case class ParallelismConfig(
  * @param storeType 存储类型
  * @param commitInterval 提交间隔
  * @param storeConfig 存储配置
+ * @param startFromLatest 是否从最新位置开始（true=跳过历史数据，false=从头开始）
+ * @param enableSnapshot 是否启用快照（true=先全量同步再增量，false=只增量）
  */
 case class OffsetConfig(
   storeType: OffsetStoreType,
   commitInterval: FiniteDuration,
-  storeConfig: Map[String, String] = Map.empty
+  storeConfig: Map[String, String] = Map.empty,
+  startFromLatest: Boolean = false,
+  enableSnapshot: Boolean = false
 )
 
 /**

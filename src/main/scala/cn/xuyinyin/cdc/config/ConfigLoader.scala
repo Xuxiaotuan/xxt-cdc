@@ -116,10 +116,15 @@ object ConfigLoader extends LazyLogging {
         Map("path" -> config.getString("file.path"))
     }
     
+    val startFromLatest = Try(config.getBoolean("start-from-latest")).getOrElse(false)
+    val enableSnapshot = Try(config.getBoolean("enable-snapshot")).getOrElse(false)
+    
     OffsetConfig(
       storeType = storeType,
       commitInterval = toScalaDuration(config.getDuration("commit-interval")),
-      storeConfig = storeConfig
+      storeConfig = storeConfig,
+      startFromLatest = startFromLatest,
+      enableSnapshot = enableSnapshot
     )
   }
   

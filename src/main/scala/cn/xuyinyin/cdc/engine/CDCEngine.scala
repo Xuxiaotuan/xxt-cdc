@@ -94,6 +94,9 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   /** 健康检查：提供系统健康状态 */
   private var healthCheck: Option[HealthCheck] = None
   
+  /** Snapshot 阶段记录的 High Watermark，用于 Streaming 阶段的起始位置 */
+  private var snapshotHighWatermark: Option[BinlogPosition] = None
+  
   /**
    * 启动 CDC 引擎
    * 
@@ -129,12 +132,20 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
     case class Phase(name: String, state: CDCState, action: () => Future[Unit])
     
     // 注意：初始状态已经是 Init，所以第一个阶段直接执行初始化操作
-    val phases = Seq(
-      Phase("Init", Init, () => initializeComponents()),
-      Phase("Snapshot", Snapshot, () => performSnapshot()),
-      Phase("Catchup", Catchup, () => performCatchup()),
-      Phase("Streaming", Streaming, () => startStreaming())
-    )
+    // 根据配置决定是否包含快照和追赶阶段
+    val phases = if (config.offset.enableSnapshot) {
+      Seq(
+        Phase("Init", Init, () => initializeComponents()),
+        Phase("Snapshot", Snapshot, () => performSnapshot()),
+        Phase("Catchup", Catchup, () => performCatchup()),
+        Phase("Streaming", Streaming, () => startStreaming())
+      )
+    } else {
+      Seq(
+        Phase("Init", Init, () => initializeComponents()),
+        Phase("Streaming", Streaming, () => startStreaming())
+      )
+    }
     
     // 使用 Source 流式处理各个阶段
     // mapAsync(1) 确保阶段按顺序执行
@@ -364,7 +375,7 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   
   /** 初始化事件标准化器：将 binlog 事件转换为标准格式 */
   private def initializeEventNormalizer(): Future[Unit] = Future {
-    eventNormalizer = Some(MySQLEventNormalizer(catalogService.get))
+    eventNormalizer = Some(MySQLEventNormalizer(catalogService.get, config.source.database))
     logger.debug("Event normalizer initialized")
   }
   
@@ -427,24 +438,147 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   /**
    * 执行快照阶段
    * 
-   * 当前为简化实现，只发现需要同步的表，不执行实际快照。
-   * 
-   * 完整实现应该：
-   * 1. 记录 Low Watermark（快照开始时的 binlog 位置）
-   * 2. 为每张表创建一致性快照
-   * 3. 等待所有快照完成
-   * 4. 记录 High Watermark（快照完成时的 binlog 位置）
-   * 
-   * 参考 CDCEngineWithSnapshot 获取完整实现。
+   * 为所有需要同步的表创建一致性快照：
+   * 1. 发现所有表
+   * 2. 过滤需要同步的表
+   * 3. 记录 Low Watermark（快照开始时的 binlog 位置）
+   * 4. 为每张表执行全量数据复制
+   * 5. 记录 High Watermark（快照结束时的 binlog 位置）
    * 
    * @return Future[Unit] 快照完成的 Future
    */
   private def performSnapshot(): Future[Unit] = {
-    logger.info("Performing snapshot phase (simplified - skipping)")
+    logger.info("Starting snapshot phase")
     
-    catalogService.get.discoverTables(config.filter).map { tables =>
+    // 1. 发现所有表
+    catalogService.get.discoverTables(config.filter).flatMap { tables =>
       val filteredTables = tableFilter.get.filterTables(tables.map(_.tableId))
-      logger.info(s"Discovered ${filteredTables.size} tables for CDC")
+      logger.info(s"Discovered ${filteredTables.size} tables for snapshot")
+      
+      if (filteredTables.isEmpty) {
+        logger.warn("No tables to snapshot, skipping snapshot phase")
+        return Future.successful(())
+      }
+      
+      // 2. 记录 Low Watermark
+      val lowWatermark = getLatestBinlogPosition()
+      logger.info(s"Low Watermark: ${lowWatermark.asString}")
+      
+      // 3. 为每张表执行快照
+      val snapshotFutures = filteredTables.map { tableId =>
+        performTableSnapshot(tableId).recover {
+          case ex: Exception =>
+            logger.error(s"Failed to snapshot table $tableId: ${ex.getMessage}", ex)
+            0L // 返回 0 表示失败
+        }
+      }
+      
+      // 4. 等待所有快照完成
+      Future.sequence(snapshotFutures).map { rowCounts =>
+        val totalRows = rowCounts.sum
+        val successCount = rowCounts.count(_ > 0)
+        logger.info(s"Snapshot completed: $successCount/${filteredTables.size} tables, $totalRows total rows")
+        
+        // 5. 记录 High Watermark 并保存，用于 Streaming 阶段
+        val highWatermark = getLatestBinlogPosition()
+        snapshotHighWatermark = Some(highWatermark)
+        logger.info(s"High Watermark: ${highWatermark.asString}")
+      }
+    }
+  }
+  
+  /**
+   * 为单个表执行快照
+   * 
+   * @param tableId 表标识
+   * @return Future[Long] 复制的行数
+   */
+  private def performTableSnapshot(tableId: TableId): Future[Long] = Future {
+    import java.sql.DriverManager
+    
+    logger.info(s"Starting snapshot for table ${tableId.database}.${tableId.table}")
+    
+    val sourceUrl = s"jdbc:mysql://${config.source.host}:${config.source.port}/${tableId.database}?useSSL=false&allowPublicKeyRetrieval=true"
+    val targetUrl = s"jdbc:mysql://${config.target.host}:${config.target.port}/${config.target.database}?useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true"
+    
+    var sourceConn: java.sql.Connection = null
+    var targetConn: java.sql.Connection = null
+    var rowCount = 0L
+    
+    try {
+      // 连接源数据库
+      sourceConn = DriverManager.getConnection(sourceUrl, config.source.username, config.source.password)
+      sourceConn.setAutoCommit(false)
+      sourceConn.setTransactionIsolation(java.sql.Connection.TRANSACTION_REPEATABLE_READ)
+      
+      // 连接目标数据库
+      targetConn = DriverManager.getConnection(targetUrl, config.target.username, config.target.password)
+      targetConn.setAutoCommit(false)
+      
+      // 查询源表数据
+      val selectSql = s"SELECT * FROM `${tableId.table}`"
+      val selectStmt = sourceConn.createStatement()
+      selectStmt.setFetchSize(1000) // 流式读取
+      val rs = selectStmt.executeQuery(selectSql)
+      
+      // 获取列信息
+      val metaData = rs.getMetaData
+      val columnCount = metaData.getColumnCount
+      val columnNames = (1 to columnCount).map(metaData.getColumnName).mkString(", ")
+      val placeholders = (1 to columnCount).map(_ => "?").mkString(", ")
+      
+      // 准备插入语句（使用 REPLACE INTO 实现幂等）
+      val insertSql = s"REPLACE INTO `${tableId.table}` ($columnNames) VALUES ($placeholders)"
+      val insertStmt = targetConn.prepareStatement(insertSql)
+      
+      // 批量插入
+      val batchSize = config.parallelism.batchSize
+      var batchCount = 0
+      
+      while (rs.next()) {
+        // 设置参数
+        for (i <- 1 to columnCount) {
+          insertStmt.setObject(i, rs.getObject(i))
+        }
+        insertStmt.addBatch()
+        batchCount += 1
+        rowCount += 1
+        
+        // 执行批量插入
+        if (batchCount >= batchSize) {
+          insertStmt.executeBatch()
+          targetConn.commit()
+          batchCount = 0
+          
+          if (rowCount % 10000 == 0) {
+            logger.info(s"Snapshot progress for ${tableId.table}: $rowCount rows")
+          }
+        }
+      }
+      
+      // 执行剩余的批量
+      if (batchCount > 0) {
+        insertStmt.executeBatch()
+        targetConn.commit()
+      }
+      
+      logger.info(s"Snapshot completed for table ${tableId.database}.${tableId.table}: $rowCount rows")
+      rowCount
+      
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to snapshot table ${tableId.database}.${tableId.table}: ${ex.getMessage}", ex)
+        if (targetConn != null) {
+          try {
+            targetConn.rollback()
+          } catch {
+            case _: Exception => // 忽略回滚错误
+          }
+        }
+        throw ex
+    } finally {
+      if (sourceConn != null) try { sourceConn.close() } catch { case _: Exception => }
+      if (targetConn != null) try { targetConn.close() } catch { case _: Exception => }
     }
   }
   
@@ -486,9 +620,23 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   private def startStreaming(): Future[Unit] = {
     logger.info("Starting streaming phase")
     
-    // 获取起始位置：优先使用上次提交的偏移量，否则从初始位置开始
-    val startPosition = offsetCoordinator.get.getLastCommittedPosition()
-      .getOrElse(FilePosition("mysql-bin.000001", 4L))
+    // 获取起始位置：
+    // 1. 如果刚完成 Snapshot，优先使用 High Watermark（快照结束时的位置）
+    // 2. 否则使用上次提交的偏移量（支持崩溃恢复）
+    // 3. 都没有则根据配置决定（从最新或从头开始）
+    val startPosition = snapshotHighWatermark
+      .orElse(offsetCoordinator.get.getLastCommittedPosition())
+      .getOrElse {
+        if (config.offset.startFromLatest) {
+          // 从最新位置开始（跳过历史数据）
+          logger.info("No previous offset found, starting from latest binlog position")
+          getLatestBinlogPosition()
+        } else {
+          // 从头开始（处理所有历史数据）
+          logger.info("No previous offset found, starting from beginning")
+          FilePosition("mysql-bin.000001", 4L)
+        }
+      }
     
     logger.info(s"Starting CDC stream from position: ${startPosition.asString}")
     
@@ -517,6 +665,80 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
     }
     
     Future.successful(())
+  }
+  
+  /**
+   * 获取最新的 binlog 位置
+   * 通过查询 MySQL 的 SHOW BINARY LOG STATUS 或 SHOW MASTER STATUS 获取当前最新的 binlog 文件和位置
+   * 支持 MySQL 8.2+ 的新语法和旧版本的兼容性
+   */
+  private def getLatestBinlogPosition(): FilePosition = {
+    import java.sql.{DriverManager, SQLException}
+    
+    val url = s"jdbc:mysql://${config.source.host}:${config.source.port}/${config.source.database}?useSSL=false&allowPublicKeyRetrieval=true"
+    
+    var conn: java.sql.Connection = null
+    try {
+      conn = DriverManager.getConnection(url, config.source.username, config.source.password)
+      
+      // 尝试新语法（MySQL 8.2+）
+      val position = try {
+        val stmt = conn.createStatement()
+        val rs = stmt.executeQuery("SHOW BINARY LOG STATUS")
+        
+        if (rs.next()) {
+          val filename = rs.getString("File")
+          val pos = rs.getLong("Position")
+          logger.info(s"Latest binlog position (BINARY LOG STATUS): $filename:$pos")
+          Some(FilePosition(filename, pos))
+        } else {
+          None
+        }
+      } catch {
+        case _: SQLException =>
+          // 新语法失败，尝试旧语法
+          logger.debug("SHOW BINARY LOG STATUS not supported, trying SHOW MASTER STATUS")
+          None
+      }
+      
+      // 如果新语法失败，尝试旧语法（MySQL 5.x - 8.1）
+      position.getOrElse {
+        try {
+          val stmt = conn.createStatement()
+          val rs = stmt.executeQuery("SHOW MASTER STATUS")
+          
+          if (rs.next()) {
+            val filename = rs.getString("File")
+            val pos = rs.getLong("Position")
+            logger.info(s"Latest binlog position (MASTER STATUS): $filename:$pos")
+            FilePosition(filename, pos)
+          } else {
+            logger.warn("No binlog status found, falling back to default position")
+            FilePosition("mysql-bin.000001", 4L)
+          }
+        } catch {
+          case ex: SQLException =>
+            logger.error(s"Failed to get binlog position: ${ex.getMessage}. Check if binlog is enabled and user has REPLICATION CLIENT privilege.")
+            logger.warn("Falling back to default position: mysql-bin.000001:4")
+            FilePosition("mysql-bin.000001", 4L)
+        }
+      }
+      
+    } catch {
+      case ex: Exception =>
+        logger.error(s"Failed to connect to MySQL: ${ex.getMessage}", ex)
+        logger.warn("Falling back to default position: mysql-bin.000001:4")
+        FilePosition("mysql-bin.000001", 4L)
+    } finally {
+      if (conn != null) {
+        try {
+          conn.close()
+        } catch {
+          case ex: Exception =>
+            logger.warn(s"Failed to close connection: ${ex.getMessage}")
+        }
+      }
+    }
   }
   
   /**

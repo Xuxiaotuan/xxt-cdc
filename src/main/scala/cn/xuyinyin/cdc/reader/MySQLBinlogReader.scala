@@ -39,6 +39,9 @@ class MySQLBinlogReader(
     FilePosition("", 0L)
   )
   
+  // 表ID映射：binlog中的数字表ID -> TableId(database, table)
+  private val tableIdMap = scala.collection.concurrent.TrieMap[Long, TableId]()
+  
   // 连接状态
   @volatile private var isConnected = false
   
@@ -153,6 +156,10 @@ class MySQLBinlogReader(
       case EventType.DELETE_ROWS | EventType.EXT_DELETE_ROWS =>
         processDeleteRowsEvent(event)
         
+      case EventType.TABLE_MAP =>
+        processTableMapEvent(event)
+        None
+        
       case EventType.QUERY =>
         processQueryEvent(event)
         
@@ -178,12 +185,15 @@ class MySQLBinlogReader(
     val data = event.getData[WriteRowsEventData]
     val tableId = extractTableId(data.getTableId)
     
+    val tableInfo = tableId.map(t => s"${t.database}.${t.table}").getOrElse(s"tableId=${data.getTableId}")
+    logger.info(s"Received INSERT event for $tableInfo, rows: ${data.getRows.size()}")
+    
     Some(RawBinlogEvent(
       position = currentPosition.get(),
       timestamp = Instant.ofEpochMilli(event.getHeader[EventHeaderV4].getTimestamp),
       eventType = WriteRowsEvent,
       tableId = tableId,
-      rawData = ByteString(serializeEventData(data))
+      rawData = data
     ))
   }
   
@@ -191,12 +201,15 @@ class MySQLBinlogReader(
     val data = event.getData[UpdateRowsEventData]
     val tableId = extractTableId(data.getTableId)
     
+    val tableInfo = tableId.map(t => s"${t.database}.${t.table}").getOrElse(s"tableId=${data.getTableId}")
+    logger.info(s"Received UPDATE event for $tableInfo, rows: ${data.getRows.size()}")
+    
     Some(RawBinlogEvent(
       position = currentPosition.get(),
       timestamp = Instant.ofEpochMilli(event.getHeader[EventHeaderV4].getTimestamp),
       eventType = UpdateRowsEvent,
       tableId = tableId,
-      rawData = ByteString(serializeEventData(data))
+      rawData = data
     ))
   }
   
@@ -204,12 +217,15 @@ class MySQLBinlogReader(
     val data = event.getData[DeleteRowsEventData]
     val tableId = extractTableId(data.getTableId)
     
+    val tableInfo = tableId.map(t => s"${t.database}.${t.table}").getOrElse(s"tableId=${data.getTableId}")
+    logger.info(s"Received DELETE event for $tableInfo, rows: ${data.getRows.size()}")
+    
     Some(RawBinlogEvent(
       position = currentPosition.get(),
       timestamp = Instant.ofEpochMilli(event.getHeader[EventHeaderV4].getTimestamp),
       eventType = DeleteRowsEvent,
       tableId = tableId,
-      rawData = ByteString(serializeEventData(data))
+      rawData = data
     ))
   }
   
@@ -241,28 +257,51 @@ class MySQLBinlogReader(
     logger.info(s"Binlog rotated to: $newFilename:$newPosition")
   }
   
-  private def updatePosition(event: Event): Unit = {
-    val header = event.getHeader[EventHeader]
+  private def processTableMapEvent(event: Event): Unit = {
+    val data = event.getData[TableMapEventData]
+    val tableId = data.getTableId
+    val database = data.getDatabase
+    val table = data.getTable
     
+    val tid = TableId(database, table)
+    tableIdMap.put(tableId, tid)
+    
+    logger.debug(s"Table mapping: $tableId -> ${database}.${table}")
+  }
+  
+  private def updatePosition(event: Event): Unit = {
     currentPosition.get() match {
-      case FilePosition(filename, position) =>
-        // 更新位置 - EventHeader 没有直接的 getPosition 方法
-        // 我们保持当前位置不变，因为位置更新由 RotateEvent 处理
-        ()
+      case FilePosition(filename, _) =>
+        // 从事件头获取下一个位置
+        // EventHeaderV4.getNextPosition() 返回当前事件结束后的位置
+        val header = event.getHeader[EventHeaderV4]
+        val nextPosition = header.getNextPosition
+        
+        if (nextPosition > 0) {
+          val newPosition = FilePosition(filename, nextPosition)
+          currentPosition.set(newPosition)
+          logger.debug(s"Updated position to: ${newPosition.asString}")
+        }
+        
       case _: GTIDPosition =>
         // GTID 模式下位置由 MySQL 自动管理
+        // 通过 client.getGtidSet() 获取当前 GTID
+        val gtidSet = client.getGtidSet
+        if (gtidSet != null && gtidSet.nonEmpty) {
+          val newPosition = GTIDPosition(gtidSet)
+          currentPosition.set(newPosition)
+          logger.debug(s"Updated GTID position to: $gtidSet")
+        }
     }
   }
   
   private def extractTableId(tableId: Long): Option[TableId] = {
-    // 这里需要维护一个 tableId 到 TableId 的映射
-    // 暂时返回 None，后续在 EventNormalizer 中处理
-    None
-  }
-  
-  private def serializeEventData(data: Any): Array[Byte] = {
-    // 简单序列化，实际应该使用更高效的序列化方式
-    data.toString.getBytes("UTF-8")
+    tableIdMap.get(tableId) match {
+      case Some(tid) => Some(tid)
+      case None =>
+        logger.warn(s"Table ID $tableId not found in mapping, TABLE_MAP event may be missing")
+        None
+    }
   }
   
   private def isDDL(sql: String): Boolean = {

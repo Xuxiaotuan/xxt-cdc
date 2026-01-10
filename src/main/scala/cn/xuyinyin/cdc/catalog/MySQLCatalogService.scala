@@ -54,13 +54,15 @@ class MySQLCatalogService(config: DatabaseConfig)(implicit ec: ExecutionContext)
     val sql = """
       SELECT TABLE_SCHEMA, TABLE_NAME
       FROM information_schema.TABLES
-      WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+      WHERE TABLE_SCHEMA = ?
         AND TABLE_TYPE = 'BASE TABLE'
-      ORDER BY TABLE_SCHEMA, TABLE_NAME
+      ORDER BY TABLE_NAME
     """
     
-    Using.resource(conn.createStatement()) { stmt =>
-      Using.resource(stmt.executeQuery(sql)) { rs =>
+    Using.resource(conn.prepareStatement(sql)) { stmt =>
+      stmt.setString(1, config.database)
+      
+      Using.resource(stmt.executeQuery()) { rs =>
         Iterator.continually(rs)
           .takeWhile(_.next())
           .map { rs =>

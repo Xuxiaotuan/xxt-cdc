@@ -60,9 +60,16 @@ class DefaultOffsetCoordinator(
     val positionKey = position.asString
     val partitionMap = partitionOffsets.get(partition)
     
-    // 验证状态转换
+    // 获取当前状态
     val currentState = Option(partitionMap.get(positionKey)).getOrElse(Received)
     
+    // 如果已经是 Applied 或 Committed，直接返回（幂等操作）
+    if (currentState == Applied || currentState == Committed) {
+      logger.trace(s"Position already in state $currentState in partition $partition: $positionKey")
+      return
+    }
+    
+    // 验证状态转换
     if (OffsetState.isValidTransition(currentState, Applied)) {
       partitionMap.put(positionKey, Applied)
       logger.debug(s"Marked position as APPLIED in partition $partition: $positionKey")

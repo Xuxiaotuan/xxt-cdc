@@ -18,6 +18,9 @@ import scala.util.{Failure, Success, Try, Using}
 class PooledMySQLSink(config: DatabaseConfig)(implicit ec: ExecutionContext) 
   extends MySQLSink with LazyLogging {
 
+  // 保存目标数据库名，用于构建 SQL 语句
+  private val targetDatabase: String = config.database
+  
   // 初始化 HikariCP 连接池
   private val dataSource: HikariDataSource = initializeDataSource()
   
@@ -86,8 +89,9 @@ class PooledMySQLSink(config: DatabaseConfig)(implicit ec: ExecutionContext)
       val placeholders = columns.map(_ => "?").mkString(", ")
       val updateClause = columns.map(col => s"$col = VALUES($col)").mkString(", ")
       
+      // 使用目标数据库名，而不是事件中的源数据库名
       s"""
-         |INSERT INTO ${table.database}.${table.table} ($columnList)
+         |INSERT INTO $targetDatabase.${table.table} ($columnList)
          |VALUES ($placeholders)
          |ON DUPLICATE KEY UPDATE $updateClause
          |""".stripMargin
@@ -125,8 +129,9 @@ class PooledMySQLSink(config: DatabaseConfig)(implicit ec: ExecutionContext)
       val setClause = dataColumns.map(col => s"$col = ?").mkString(", ")
       val whereClause = pkColumns.map(col => s"$col = ?").mkString(" AND ")
       
+      // 使用目标数据库名，而不是事件中的源数据库名
       s"""
-         |UPDATE ${table.database}.${table.table}
+         |UPDATE $targetDatabase.${table.table}
          |SET $setClause
          |WHERE $whereClause
          |""".stripMargin
@@ -159,8 +164,9 @@ class PooledMySQLSink(config: DatabaseConfig)(implicit ec: ExecutionContext)
     statementCache.getOrElseUpdate(cacheKey, {
       val whereClause = pkColumns.map(col => s"$col = ?").mkString(" AND ")
       
+      // 使用目标数据库名，而不是事件中的源数据库名
       s"""
-         |DELETE FROM ${table.database}.${table.table}
+         |DELETE FROM $targetDatabase.${table.table}
          |WHERE $whereClause
          |""".stripMargin
     })
