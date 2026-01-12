@@ -1,8 +1,8 @@
 package cn.xuyinyin.cdc.worker
 
+import cn.xuyinyin.cdc.connector.DataWriter
 import cn.xuyinyin.cdc.coordinator.OffsetCoordinator
 import cn.xuyinyin.cdc.model.{BinlogPosition, ChangeEvent, Delete, Insert, Update}
-import cn.xuyinyin.cdc.sink.MySQLSink
 import com.typesafe.scalalogging.LazyLogging
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -12,15 +12,17 @@ import scala.util.{Failure, Success}
  * 默认的 Apply Worker 实现
  * 负责将变更事件批量应用到目标数据库
  * 
+ * 使用 DataWriter 接口，支持任意目标数据库（MySQL、StarRocks 等）
+ * 
  * @param partition 分区号
- * @param sink MySQL Sink
+ * @param writer 数据写入器（支持任意数据库）
  * @param offsetCoordinator 偏移量协调器
  * @param batchSize 批处理大小
  * @param metrics CDC 指标收集器
  */
 class DefaultApplyWorker(
   partition: Int,
-  sink: MySQLSink,
+  writer: DataWriter,
   offsetCoordinator: OffsetCoordinator,
   batchSize: Int = 100,
   metrics: Option[cn.xuyinyin.cdc.metrics.CDCMetrics] = None
@@ -115,7 +117,7 @@ class DefaultApplyWorker(
   private def applyInsert(event: ChangeEvent): Future[Unit] = {
     event.after match {
       case Some(data) =>
-        sink.executeInsert(event.tableId, data).andThen {
+        writer.insert(event.tableId, data).andThen {
           case Success(_) =>
             // 记录指标
             metrics.foreach(_.recordApply(1))
@@ -133,7 +135,7 @@ class DefaultApplyWorker(
   private def applyUpdate(event: ChangeEvent): Future[Unit] = {
     event.after match {
       case Some(data) =>
-        sink.executeUpdate(event.tableId, event.primaryKey, data).andThen {
+        writer.update(event.tableId, event.primaryKey, data).andThen {
           case Success(_) =>
             // 记录指标
             metrics.foreach(_.recordApply(1))
@@ -170,7 +172,7 @@ class DefaultApplyWorker(
   }
   
   private def applyDelete(event: ChangeEvent): Future[Unit] = {
-    sink.executeDelete(event.tableId, event.primaryKey).andThen {
+    writer.delete(event.tableId, event.primaryKey).andThen {
       case Success(_) =>
         // 记录指标
         metrics.foreach(_.recordApply(1))
@@ -209,11 +211,11 @@ object DefaultApplyWorker {
    */
   def apply(
     partition: Int,
-    sink: MySQLSink,
+    writer: DataWriter,
     offsetCoordinator: OffsetCoordinator,
     batchSize: Int = 100,
     metrics: Option[cn.xuyinyin.cdc.metrics.CDCMetrics] = None
   )(implicit ec: ExecutionContext): DefaultApplyWorker = {
-    new DefaultApplyWorker(partition, sink, offsetCoordinator, batchSize, metrics)
+    new DefaultApplyWorker(partition, writer, offsetCoordinator, batchSize, metrics)
   }
 }

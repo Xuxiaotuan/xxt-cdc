@@ -3,7 +3,7 @@ package cn.xuyinyin.cdc.snapshot
 import cn.xuyinyin.cdc.model._
 import cn.xuyinyin.cdc.normalizer.EventNormalizer
 import cn.xuyinyin.cdc.reader.{BinlogReader, RawBinlogEvent}
-import cn.xuyinyin.cdc.sink.MySQLSink
+import cn.xuyinyin.cdc.connector.DataWriter
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, ActorSystem, Behavior}
@@ -112,7 +112,7 @@ object CatchupProcessor extends LazyLogging {
   def apply(
     binlogReader: BinlogReader,
     eventNormalizer: EventNormalizer,
-    sink: MySQLSink
+    sink: DataWriter
   )(implicit system: ActorSystem[_]): Behavior[CatchupProcessorMessage] = {
     Behaviors.setup { context =>
       implicit val ec: ExecutionContext = context.executionContext
@@ -124,7 +124,7 @@ object CatchupProcessor extends LazyLogging {
   private def idle(
     binlogReader: BinlogReader,
     eventNormalizer: EventNormalizer,
-    sink: MySQLSink,
+    sink: DataWriter,
     currentTask: Option[CatchupTask],
     killSwitch: Option[SharedKillSwitch]
   )(implicit system: ActorSystem[_]): Behavior[CatchupProcessorMessage] = {
@@ -184,7 +184,7 @@ object CatchupProcessor extends LazyLogging {
   private def running(
     binlogReader: BinlogReader,
     eventNormalizer: EventNormalizer,
-    sink: MySQLSink,
+    sink: DataWriter,
     currentTask: Option[CatchupTask],
     killSwitch: Option[SharedKillSwitch]
   )(implicit system: ActorSystem[_]): Behavior[CatchupProcessorMessage] = {
@@ -247,7 +247,7 @@ object CatchupProcessor extends LazyLogging {
     task: CatchupTask,
     binlogReader: BinlogReader,
     eventNormalizer: EventNormalizer,
-    sink: MySQLSink,
+    sink: DataWriter,
     killSwitch: SharedKillSwitch,
     progressActor: ActorRef[CatchupProcessorMessage]
   )(implicit system: ActorSystem[_]): Future[CatchupResult] = {
@@ -352,7 +352,7 @@ object CatchupProcessor extends LazyLogging {
   /**
    * 创建写入 Sink
    */
-  private def createWriteSink(sink: MySQLSink)(implicit ec: ExecutionContext): Sink[ChangeEvent, Future[Done]] = {
+  private def createWriteSink(sink: DataWriter)(implicit ec: ExecutionContext): Sink[ChangeEvent, Future[Done]] = {
     Flow[ChangeEvent]
       .grouped(100) // 批量处理
       .mapAsync(1) { batch =>
@@ -360,14 +360,14 @@ object CatchupProcessor extends LazyLogging {
         Future.sequence(batch.map { event =>
           event.operation match {
             case Insert =>
-              sink.executeInsert(event.tableId, event.after.getOrElse(Map.empty))
+              sink.insert(event.tableId, event.after.getOrElse(Map.empty))
             case Update =>
               val pk = event.primaryKey
               val data = event.after.getOrElse(Map.empty)
-              sink.executeUpdate(event.tableId, pk, data)
+              sink.update(event.tableId, pk, data)
             case Delete =>
               val pk = event.primaryKey
-              sink.executeDelete(event.tableId, pk)
+              sink.delete(event.tableId, pk)
           }
         }).map(_ => Done)
       }
@@ -398,7 +398,7 @@ object CatchupProcessor extends LazyLogging {
 class CatchupManager(
   binlogReader: BinlogReader,
   eventNormalizer: EventNormalizer,
-  sink: MySQLSink,
+  sink: DataWriter,
   lowWatermarkManager: LowWatermarkManager
 )(implicit system: ActorSystem[_]) extends LazyLogging {
   
@@ -504,7 +504,7 @@ object CatchupManager {
   def apply(
     binlogReader: BinlogReader,
     eventNormalizer: EventNormalizer,
-    sink: MySQLSink,
+    sink: DataWriter,
     lowWatermarkManager: LowWatermarkManager
   )(implicit system: ActorSystem[_]): CatchupManager = {
     new CatchupManager(binlogReader, eventNormalizer, sink, lowWatermarkManager)

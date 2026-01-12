@@ -1,10 +1,10 @@
 package cn.xuyinyin.cdc.engine
 
 import cn.xuyinyin.cdc.config.CDCConfig
+import cn.xuyinyin.cdc.reader.MySQLBinlogReader
 import cn.xuyinyin.cdc.logging.CDCLogging
 import cn.xuyinyin.cdc.model._
 import cn.xuyinyin.cdc.normalizer.EventNormalizer
-import cn.xuyinyin.cdc.reader.MySQLBinlogReader
 import cn.xuyinyin.cdc.router.EventRouter
 import cn.xuyinyin.cdc.worker.ApplyWorker
 import org.apache.pekko.stream.Materializer

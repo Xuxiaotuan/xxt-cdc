@@ -1,7 +1,7 @@
 package cn.xuyinyin.cdc.snapshot
 
 import cn.xuyinyin.cdc.catalog.CatalogService
-import cn.xuyinyin.cdc.sink.MySQLSink
+import cn.xuyinyin.cdc.connector.DataWriter
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
@@ -15,7 +15,7 @@ object SnapshotWorkerPool extends LazyLogging {
   def apply(
     poolSize: Int,
     catalogService: CatalogService,
-    sink: MySQLSink
+    sink: DataWriter
   ): Behavior[SnapshotWorkerMessage] = {
     Behaviors.setup { context =>
       logger.info(s"Creating snapshot worker pool with $poolSize workers")

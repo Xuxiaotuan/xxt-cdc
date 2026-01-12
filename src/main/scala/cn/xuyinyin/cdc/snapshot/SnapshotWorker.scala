@@ -80,7 +80,7 @@ object SnapshotWorker extends LazyLogging {
    */
   def idle(
     catalogService: CatalogService,
-    sink: cn.xuyinyin.cdc.sink.MySQLSink
+    sink: cn.xuyinyin.cdc.connector.DataWriter
   ): Behavior[SnapshotWorkerMessage] = {
     Behaviors.receive { (context, message) =>
       implicit val ec: ExecutionContext = context.executionContext
@@ -192,7 +192,7 @@ object SnapshotWorker extends LazyLogging {
     task: SnapshotTask,
     config: SnapshotSchedulerConfig,
     catalogService: CatalogService,
-    sink: cn.xuyinyin.cdc.sink.MySQLSink
+    sink: cn.xuyinyin.cdc.connector.DataWriter
   ): Long = {
     logger.info(s"Executing snapshot for table ${task.tableId}")
     

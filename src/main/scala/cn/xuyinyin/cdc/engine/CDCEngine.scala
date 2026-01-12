@@ -1,18 +1,18 @@
 package cn.xuyinyin.cdc.engine
 
-import cn.xuyinyin.cdc.catalog.{CatalogService, MySQLCatalogService}
+import cn.xuyinyin.cdc.catalog.CatalogService
 import cn.xuyinyin.cdc.config.CDCConfig
+import cn.xuyinyin.cdc.connector.{ConnectorBootstrap, ConnectorRegistry, DataWriter, SinkConnector, SourceConnector}
 import cn.xuyinyin.cdc.coordinator.{DefaultOffsetCoordinator, FileOffsetStore, MySQLOffsetStore, OffsetCoordinator, OffsetStore}
 import cn.xuyinyin.cdc.filter.TableFilter
 import cn.xuyinyin.cdc.health.{HealthCheck, HealthStatus}
 import cn.xuyinyin.cdc.logging.CDCLogging
 import cn.xuyinyin.cdc.metrics.{CDCMetrics, MetricsSnapshot}
 import cn.xuyinyin.cdc.model._
-import cn.xuyinyin.cdc.normalizer.{EventNormalizer, MySQLEventNormalizer}
+import cn.xuyinyin.cdc.normalizer.EventNormalizer
 import cn.xuyinyin.cdc.pipeline.CDCStreamPipeline
-import cn.xuyinyin.cdc.reader.{BinlogReader, MySQLBinlogReader}
+import cn.xuyinyin.cdc.reader.BinlogReader
 import cn.xuyinyin.cdc.router.{EventRouter, HashBasedRouter}
-import cn.xuyinyin.cdc.sink.{MySQLSink, PooledMySQLSink}
 import cn.xuyinyin.cdc.worker.{ApplyWorker, DefaultApplyWorker}
 import org.apache.pekko.stream.Materializer
 import org.apache.pekko.Done
@@ -56,16 +56,22 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   
   // ========== 核心组件 ==========
   
+  /** Source Connector：源数据库连接器 */
+  private var sourceConnector: Option[SourceConnector] = None
+  
+  /** Sink Connector：目标数据库连接器 */
+  private var sinkConnector: Option[SinkConnector] = None
+  
   /** 目录服务：管理表元数据、验证 binlog 配置 */
   private var catalogService: Option[CatalogService] = None
   
   /** 表过滤器：根据配置过滤需要同步的表 */
   private var tableFilter: Option[TableFilter] = None
   
-  /** Binlog 读取器：从 MySQL 读取 binlog 事件 */
+  /** Binlog 读取器：从源数据库读取变更日志事件 */
   private var binlogReader: Option[BinlogReader] = None
   
-  /** 事件标准化器：将 binlog 事件转换为标准格式 */
+  /** 事件标准化器：将原始事件转换为标准格式 */
   private var eventNormalizer: Option[EventNormalizer] = None
   
   /** 事件路由器：根据表和主键将事件路由到不同分区 */
@@ -83,8 +89,8 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   /** 流处理管道：连接所有组件的 Pekko Streams 管道 */
   private var pipeline: Option[CDCStreamPipeline] = None
   
-  /** MySQL Sink：幂等地写入目标数据库 */
-  private var sink: Option[MySQLSink] = None
+  /** 数据写入器：幂等地写入目标数据库 */
+  private var writer: Option[DataWriter] = None
   
   // ========== 监控组件 ==========
   
@@ -201,11 +207,8 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
     // 停止流处理管道
     pipeline.foreach(_.stop())
     
-    // 关闭连接池
-    sink.foreach {
-      case pooledSink: PooledMySQLSink => pooledSink.close()
-      case _ =>
-    }
+    // 关闭数据写入器
+    writer.foreach(_.close())
     
     shutdownPromise.trySuccess(Done)
     logger.info("CDC Engine stopped")
@@ -303,11 +306,12 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
     case class InitStep(name: String, action: () => Future[Unit])
     
     val initSteps = Seq(
+      InitStep("ConnectorBootstrap", () => initializeConnectors()),
       InitStep("CatalogService", () => initializeCatalogService()),
       InitStep("TableFilter", () => initializeTableFilter()),
       InitStep("OffsetStore", () => initializeOffsetStore()),
       InitStep("OffsetCoordinator", () => initializeOffsetCoordinator()),
-      InitStep("Sink", () => initializeSink()),
+      InitStep("DataWriter", () => initializeWriter()),
       InitStep("BinlogReader", () => initializeBinlogReader()),
       InitStep("EventNormalizer", () => initializeEventNormalizer()),
       InitStep("EventRouter", () => initializeEventRouter()),
@@ -329,9 +333,33 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
       }
   }
   
-  /** 初始化目录服务：连接源数据库，管理表元数据 */
+  /** 初始化 Connector 框架 */
+  private def initializeConnectors(): Future[Unit] = Future {
+    // 初始化 Connector 注册中心
+    ConnectorBootstrap.initialize()
+    
+    // 获取 Source Connector
+    sourceConnector = Some(ConnectorRegistry.getSource(config.sourceType))
+    logger.info(s"Using source connector: ${config.sourceType} (version ${sourceConnector.get.version})")
+    
+    // 获取 Sink Connector
+    sinkConnector = Some(ConnectorRegistry.getSink(config.targetType))
+    logger.info(s"Using sink connector: ${config.targetType} (version ${sinkConnector.get.version})")
+    
+    // 验证 Connector 配置
+    sourceConnector.get.validateConfig(config.source).foreach { error =>
+      throw new IllegalArgumentException(s"Invalid source config: $error")
+    }
+    sinkConnector.get.validateConfig(config.target).foreach { error =>
+      throw new IllegalArgumentException(s"Invalid target config: $error")
+    }
+    
+    logger.debug("Connectors initialized")
+  }
+  
+  /** 初始化目录服务：使用 Source Connector 创建 */
   private def initializeCatalogService(): Future[Unit] = Future {
-    catalogService = Some(MySQLCatalogService(config.source))
+    catalogService = Some(sourceConnector.get.createCatalog(config.source))
     logger.debug("Catalog service initialized")
   }
   
@@ -373,21 +401,21 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
     logger.debug("Offset coordinator initialized")
   }
   
-  /** 初始化 MySQL Sink：使用连接池的幂等写入器 */
-  private def initializeSink(): Future[Unit] = Future {
-    sink = Some(PooledMySQLSink(config.target))
-    logger.debug("MySQL sink initialized")
+  /** 初始化数据写入器：使用 Sink Connector 创建 */
+  private def initializeWriter(): Future[Unit] = Future {
+    writer = Some(sinkConnector.get.createWriter(config.target))
+    logger.debug("Data writer initialized")
   }
   
-  /** 初始化 Binlog 读取器：从 MySQL 读取 binlog 事件 */
+  /** 初始化 Binlog 读取器：使用 Source Connector 创建 */
   private def initializeBinlogReader(): Future[Unit] = Future {
-    binlogReader = Some(MySQLBinlogReader(config.source))
+    binlogReader = Some(sourceConnector.get.createReader(config.source))
     logger.debug("Binlog reader initialized")
   }
   
-  /** 初始化事件标准化器：将 binlog 事件转换为标准格式 */
+  /** 初始化事件标准化器：使用 Source Connector 创建 */
   private def initializeEventNormalizer(): Future[Unit] = Future {
-    eventNormalizer = Some(MySQLEventNormalizer(catalogService.get, config.source.database))
+    eventNormalizer = Some(sourceConnector.get.createNormalizer(catalogService.get, config.source.database))
     logger.debug("Event normalizer initialized")
   }
   
@@ -402,7 +430,7 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
     applyWorkers = (0 until config.parallelism.partitionCount).map { partition =>
       DefaultApplyWorker(
         partition,
-        sink.get,
+        writer.get,
         offsetCoordinator.get,
         config.parallelism.batchSize,
         Some(metrics)  // 传递 metrics
