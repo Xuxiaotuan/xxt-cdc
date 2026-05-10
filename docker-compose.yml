@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 源 MySQL 数据库
   source-mysql:
@@ -7,7 +5,7 @@ services:
     container_name: cdc-source-mysql
     environment:
       MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: source_db
+      MYSQL_DATABASE: test
       MYSQL_USER: cdc_user
       MYSQL_PASSWORD: cdc_password
     ports:
@@ -16,7 +14,7 @@ services:
       - source_mysql_data:/var/lib/mysql
       - ./docker/mysql/source-init.sql:/docker-entrypoint-initdb.d/init.sql
       - ./docker/mysql/source.cnf:/etc/mysql/conf.d/source.cnf
-    command: --server-id=1 --log-bin=mysql-bin --binlog-format=ROW --binlog-do-db=source_db
+    command: --server-id=1 --log-bin=mysql-bin --binlog-format=ROW --binlog-do-db=test
     networks:
       - cdc-network
     healthcheck:
@@ -30,7 +28,7 @@ services:
     container_name: cdc-target-mysql
     environment:
       MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: target_db
+      MYSQL_DATABASE: test_target
       MYSQL_USER: cdc_user
       MYSQL_PASSWORD: cdc_password
     ports:
@@ -53,27 +51,34 @@ services:
     container_name: mysql-cdc-service
     environment:
       # 源数据库配置
-      SOURCE_MYSQL_HOST: source-mysql
-      SOURCE_MYSQL_PORT: 3306
-      SOURCE_MYSQL_USERNAME: root
-      SOURCE_MYSQL_PASSWORD: password
-      SOURCE_MYSQL_DATABASE: source_db
+      CDC_SOURCE_HOST: source-mysql
+      CDC_SOURCE_PORT: 3306
+      CDC_SOURCE_USERNAME: cdc_user
+      CDC_SOURCE_PASSWORD: cdc_password
+      CDC_SOURCE_DATABASE: test
       
       # 目标数据库配置
-      TARGET_MYSQL_HOST: target-mysql
-      TARGET_MYSQL_PORT: 3306
-      TARGET_MYSQL_USERNAME: root
-      TARGET_MYSQL_PASSWORD: password
-      TARGET_MYSQL_DATABASE: target_db
+      CDC_TARGET_HOST: target-mysql
+      CDC_TARGET_PORT: 3306
+      CDC_TARGET_USERNAME: cdc_user
+      CDC_TARGET_PASSWORD: cdc_password
+      CDC_TARGET_DATABASE: test_target
+
+      # 元数据库配置
+      CDC_METADATA_HOST: target-mysql
+      CDC_METADATA_PORT: 3306
+      CDC_METADATA_USERNAME: cdc_user
+      CDC_METADATA_PASSWORD: cdc_password
+      CDC_METADATA_DATABASE: xxt_cdc
       
       # CDC 配置
       CDC_BATCH_SIZE: 1000
       CDC_FLUSH_INTERVAL: 5s
-      CDC_APPLY_WORKERS: 4
-      CDC_ROUTER_PARTITIONS: 16
+      CDC_APPLY_WORKER_COUNT: 4
+      CDC_PARTITION_COUNT: 16
       
       # 偏移量存储配置
-      CDC_OFFSET_STORAGE: mysql
+      CDC_OFFSET_STORE_TYPE: mysql
       CDC_OFFSET_COMMIT_INTERVAL: 10s
       
       # 热表集配置

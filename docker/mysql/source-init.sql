@@ -32,6 +32,15 @@ INSERT INTO orders (user_id, product_name, amount) VALUES
 (2, 'Mouse', 29.99),
 (3, 'Keyboard', 79.99);
 
+-- Streaming demo table. It starts empty so demo verification only checks
+-- events generated after the CDC service is running.
+CREATE TABLE cdc_demo_events (
+    id INT PRIMARY KEY,
+    event_key VARCHAR(64) NOT NULL,
+    event_value VARCHAR(255) NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
 -- 创建 CDC 偏移量存储表
 CREATE TABLE cdc_offsets (
     id VARCHAR(255) PRIMARY KEY,

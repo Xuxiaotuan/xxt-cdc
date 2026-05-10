@@ -61,21 +61,19 @@ class MySQLEventNormalizer(
   private def normalizeInsertEvent(rawEvent: RawBinlogEvent): Option[ChangeEvent] = {
     Try {
       val data = rawEvent.rawData.asInstanceOf[WriteRowsEventData]
-      val tableId = rawEvent.tableId.getOrElse(return None)
+      val tableId = rawEvent.tableId.getOrElse(throw new IllegalStateException("No tableId"))
       
-      // 获取表结构
       val schema = getTableSchema(tableId)
-      
-      // 处理每一行插入
       val rows = data.getRows.asScala
-      if (rows.isEmpty) return None
+      if (rows.isEmpty) throw new IllegalStateException("INSERT event has empty rows")
       
-      // 暂时只处理第一行（实际应该为每行生成一个事件）
+      // 暂时只处理第一行
       val row = rows.head
       val rowData = convertRowToMap(row, schema)
       val primaryKey = extractPrimaryKey(rowData, schema)
       
       Some(ChangeEvent(
+        recordId = rawEvent.recordId,
         tableId = tableId,
         operation = Insert,
         primaryKey = primaryKey,
@@ -95,22 +93,19 @@ class MySQLEventNormalizer(
   private def normalizeUpdateEvent(rawEvent: RawBinlogEvent): Option[ChangeEvent] = {
     Try {
       val data = rawEvent.rawData.asInstanceOf[UpdateRowsEventData]
-      val tableId = rawEvent.tableId.getOrElse(return None)
+      val tableId = rawEvent.tableId.getOrElse(throw new IllegalStateException("No tableId"))
       
-      // 获取表结构
       val schema = getTableSchema(tableId)
-      
-      // 处理每一行更新
       val rows = data.getRows.asScala
-      if (rows.isEmpty) return None
+      if (rows.isEmpty) throw new IllegalStateException("UPDATE event has empty rows")
       
-      // 暂时只处理第一行
       val row = rows.head
       val beforeData = convertRowToMap(row.getKey, schema)
       val afterData = convertRowToMap(row.getValue, schema)
       val primaryKey = extractPrimaryKey(afterData, schema)
       
       Some(ChangeEvent(
+        recordId = rawEvent.recordId,
         tableId = tableId,
         operation = Update,
         primaryKey = primaryKey,
@@ -130,21 +125,18 @@ class MySQLEventNormalizer(
   private def normalizeDeleteEvent(rawEvent: RawBinlogEvent): Option[ChangeEvent] = {
     Try {
       val data = rawEvent.rawData.asInstanceOf[DeleteRowsEventData]
-      val tableId = rawEvent.tableId.getOrElse(return None)
+      val tableId = rawEvent.tableId.getOrElse(throw new IllegalStateException("No tableId"))
       
-      // 获取表结构
       val schema = getTableSchema(tableId)
-      
-      // 处理每一行删除
       val rows = data.getRows.asScala
-      if (rows.isEmpty) return None
+      if (rows.isEmpty) throw new IllegalStateException("DELETE event has empty rows")
       
-      // 暂时只处理第一行
       val row = rows.head
       val rowData = convertRowToMap(row, schema)
       val primaryKey = extractPrimaryKey(rowData, schema)
       
       Some(ChangeEvent(
+        recordId = rawEvent.recordId,
         tableId = tableId,
         operation = Delete,
         primaryKey = primaryKey,

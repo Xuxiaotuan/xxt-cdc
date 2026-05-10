@@ -1,5 +1,5 @@
 # MySQL CDC Service Dockerfile
-FROM openjdk:11-jre-slim
+FROM eclipse-temurin:17-jre
 
 # 设置工作目录
 WORKDIR /app
@@ -7,7 +7,7 @@ WORKDIR /app
 # 安装必要的工具
 RUN apt-get update && apt-get install -y \
     curl \
-    netcat \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # 创建应用用户

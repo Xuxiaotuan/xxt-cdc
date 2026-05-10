@@ -39,7 +39,8 @@ trait SourceConnector {
    * @return BinlogReader 实例
    */
   def createReader(
-    config: DatabaseConfig
+    config: DatabaseConfig,
+    taskName: String = "default"
   )(implicit mat: Materializer, ec: ExecutionContext): BinlogReader
   
   /**
@@ -63,7 +64,8 @@ trait SourceConnector {
    */
   def createNormalizer(
     catalog: CatalogService,
-    sourceDatabase: String
+    sourceDatabase: String,
+    taskName: String = "default"
   )(implicit ec: ExecutionContext): EventNormalizer
   
   /**

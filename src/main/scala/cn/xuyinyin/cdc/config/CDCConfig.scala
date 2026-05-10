@@ -40,6 +40,7 @@ case class CDCConfig(
  * @param password 密码
  * @param database 数据库名
  * @param connectionPool 连接池配置
+ * @param debeziumConfig Debezium 特定配置
  */
 case class DatabaseConfig(
   host: String,
@@ -47,7 +48,8 @@ case class DatabaseConfig(
   username: String,
   password: String,
   database: String,
-  connectionPool: ConnectionPoolConfig
+  connectionPool: ConnectionPoolConfig,
+  debeziumConfig: DebeziumConfig = DebeziumConfig()
 )
 
 /**
@@ -118,3 +120,22 @@ case class OffsetConfig(
 sealed trait OffsetStoreType
 case object MySQLOffsetStore extends OffsetStoreType
 case object FileOffsetStore extends OffsetStoreType
+
+/**
+ * Debezium 配置
+ * 
+ * @param snapshotMode 快照模式：initial（首次全量）、schema_only（仅结构）、never（不快照）
+ * @param maxBatchSize 最大批处理大小
+ * @param maxQueueSize 最大队列大小
+ * @param errorsMaxRetries 最大重试次数
+ * @param pollIntervalMs 轮询间隔（毫秒）
+ * @param tableIncludeList 包含的表列表（格式：database.table1,database.table2），为空则监听所有表
+ */
+case class DebeziumConfig(
+  snapshotMode: String = "schema_only",
+  maxBatchSize: Int = 2048,
+  maxQueueSize: Int = 8192,
+  errorsMaxRetries: Int = 3,
+  pollIntervalMs: Int = 1000,
+  tableIncludeList: String = ""
+)

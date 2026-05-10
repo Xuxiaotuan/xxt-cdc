@@ -73,6 +73,21 @@ object ConfigLoader extends LazyLogging {
   }
   
   private def loadDatabaseConfig(config: Config): DatabaseConfig = {
+    // 加载 Debezium 配置（如果存在）
+    val debeziumConfig = if (config.hasPath("debezium")) {
+      val debeziumCfg = config.getConfig("debezium")
+      DebeziumConfig(
+        snapshotMode = Try(debeziumCfg.getString("snapshot-mode")).getOrElse("schema_only"),
+        maxBatchSize = Try(debeziumCfg.getInt("max-batch-size")).getOrElse(2048),
+        maxQueueSize = Try(debeziumCfg.getInt("max-queue-size")).getOrElse(8192),
+        errorsMaxRetries = Try(debeziumCfg.getInt("errors-max-retries")).getOrElse(3),
+        pollIntervalMs = Try(debeziumCfg.getInt("poll-interval-ms")).getOrElse(1000),
+        tableIncludeList = Try(debeziumCfg.getString("table-include-list")).getOrElse("")
+      )
+    } else {
+      DebeziumConfig()
+    }
+    
     DatabaseConfig(
       host = config.getString("host"),
       port = config.getInt("port"),
@@ -83,7 +98,8 @@ object ConfigLoader extends LazyLogging {
         maxPoolSize = config.getInt("connection-pool.max-pool-size"),
         minIdle = config.getInt("connection-pool.min-idle"),
         connectionTimeout = toScalaDuration(config.getDuration("connection-pool.connection-timeout"))
-      )
+      ),
+      debeziumConfig = debeziumConfig
     )
   }
   

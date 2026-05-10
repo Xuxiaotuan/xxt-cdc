@@ -139,6 +139,7 @@ class DDLEventIntegrator(
     // 这里应该调用正常的事件标准化逻辑
     // 简化实现
     val changeEvent = ChangeEvent(
+      recordId = "ddl-placeholder",
       tableId = TableId("", ""),
       operation = Insert,
       primaryKey = Map.empty,

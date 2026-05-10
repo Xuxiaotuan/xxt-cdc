@@ -107,11 +107,6 @@ class MySQLDataWriter(
        |WHERE $whereClause""".stripMargin
   }
   
-  override protected def getInsertParameters(data: Map[String, Any], columns: Seq[String]): Seq[Any] = {
-    // MySQL 的 ON DUPLICATE KEY UPDATE 需要两份参数
-    val values = columns.map(data)
-    values ++ values
-  }
 }
 
 object MySQLSinkConnector {

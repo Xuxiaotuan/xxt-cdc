@@ -1,39 +1,88 @@
-# MySQL CDC Service
+# xxt-cdc: Debezium + Pekko Streams CDC Runtime
 
-基于 Pekko + Pekko Streams 的高性能 MySQL 到 MySQL 数据变更捕获（CDC）服务。
+基于 Debezium 和 Apache Pekko Streams 构建的轻量级 CDC Runtime。
+
+`xxt-cdc` 不重复实现 MySQL binlog 协议解析，而是复用 Debezium MySQL Connector / Debezium Engine 作为变更捕获层，在此基础上实现 CDC Runtime：事件标准化、Snapshot/Catchup 阶段编排、Low/High Watermark 切换、表级路由、主键 Hash 分区、并行 Apply、幂等 Sink 写入、Offset/Ack 协调、运行状态观测和一致性校验。
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com)
 [![Scala Version](https://img.shields.io/badge/scala-2.13.14-red)](https://www.scala-lang.org/)
 [![Pekko Version](https://img.shields.io/badge/pekko-1.1.3-blue)](https://pekko.apache.org/)
 
-## 📊 构建状态（2026-01-10）
+## 🔁 主链路闭环图
+
+👉 [查看完整交互版](docs/pipeline-architecture.html)
+
+![CDC Pipeline](docs/pipeline-architecture.html)
+
+> Debezium Engine → ChangeConsumer → AckRegistry → Normalizer → Router → ApplyWorker(串行) → OffsetCoordinator(连续checkpoint) → 回写ack
+
+## 项目边界
+
+本项目不是 Debezium 的替代品，也不是 MySQL binlog 协议研究项目。
+
+- Debezium 提供：MySQL binlog capture、snapshot event、schema history、source offset 和标准 change event。
+- xxt-cdc 负责：Debezium Event Adapter、内部事件模型、Snapshot/Catchup 阶段编排、Low/High Watermark 切换、表过滤、Hash 路由、Pekko Streams 处理流水线、并行 Sink Apply、幂等控制、Offset/Ack 协调、监控 API 和一致性校验。
+
+因此，本项目的目标是验证一个围绕 Debezium Event 构建的轻量级 CDC Processing Runtime。
+
+## 项目定位
+
+`xxt-cdc` 的价值不在于“自己读 binlog”，而在于把成熟 Capture Layer 接入到可运维的数据同步运行时中：
+
+| 方向 | 项目体现 |
+|------|----------|
+| Capture 复用 | 复用 Debezium MySQL Connector / Engine，不重复实现 binlog 协议 |
+| 事件模型 | 将 Debezium event 转换为项目内部 `ChangeEvent` 模型 |
+| 流处理 | 使用 Pekko Streams 组织 Adapter、Filter、Router、Batch、Worker、Committer |
+| 并行写入 | 基于 `hash(table + primary key)` 路由到固定分区，保证同主键顺序并提升吞吐 |
+| 幂等写入 | MySQL Sink 使用 `ON DUPLICATE KEY UPDATE` 支持重复消费后的结果收敛 |
+| Snapshot/Catchup | 通过 Low/High Watermark 衔接全量快照与增量流，避免批转流切换阶段丢失变更 |
+| 一致性 | Sink 成功后再推进处理状态，避免目标端未落库事件被标记为安全点 |
+| 可运维 | 独立 metadata DB 存储 Runtime 元数据，提供 `/health`、`/status`、`/metrics` 管理接口 |
+
+## 文档导航
+
+建议按下面顺序了解项目设计：
+
+1. [架构总览](docs/ARCHITECTURE_OVERVIEW.md)
+2. [Debezium 接入设计](docs/debezium-integration.md)
+3. [Snapshot / Catchup / Streaming Cutover](docs/snapshot-catchup.md)
+4. [事件模型](docs/event-model.md)
+5. [Offset 与一致性](docs/offset-and-consistency.md)
+6. [路由与并行 Apply](docs/routing-and-parallel-apply.md)
+7. [Sink 幂等性](docs/sink-idempotency.md)
+8. [限制与边界](docs/limitations.md)
+9. [对比说明](docs/comparison.md)
+10. [故障注入计划](docs/fault-injection.md)
+11. [一致性验证报告](docs/CONSISTENCY_VERIFICATION.md)
+12. [压测方案与结果记录](docs/BENCHMARK.md)
+
+## 📊 构建状态（2026-05-10）
 
 - ✅ **编译**: 成功 (`sbt compile`)
-- ⚠️ **测试**: 0 通过 / 0 失败（测试套件开发中）
-- ✅ **警告**: 30 个（代码风格警告，不影响功能）
-- ✅ **Snapshot**: 已实现（全量数据同步）
-- ✅ **Catchup**: 已实现（高低水位线算法，增量追赶）
-- ✅ **元数据分离**: 已实现（独立元数据库，多任务共享）
+- ✅ **测试**: 37 通过 / 0 失败（含新增 DebeziumEventNormalizer 集成测试）
+- ⚠️ **警告**: 34 个（代码风格警告，不影响功能）
 
-> **重要**: 核心 CDC 功能已实现并可用。Snapshot/Catchup 功能已完整实现，包括高低水位线算法，建议在测试环境充分验证后再用于生产。
+> **当前状态**: CDC Runtime 工程骨架已完成，Debezium Embedded Engine 接入重构中。以下功能模块仍在完善，尚未达到生产可用水平。
 
 ## 🎯 核心功能状态
 
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| Binlog 实时读取 | ✅ 已实现 | 支持 GTID 和 File+Position 模式 |
-| 事件标准化 | ✅ 已实现 | INSERT/UPDATE/DELETE 完整支持 |
-| Hash 路由分区 | ✅ 已实现 | 保证同表同主键顺序性 |
-| 并行 Apply Workers | ✅ 已实现 | 可配置并行度 |
-| 幂等写入 | ✅ 已实现 | ON DUPLICATE KEY UPDATE |
-| Offset 协调 | ✅ 已实现 | Effectively-once 语义 |
-| 元数据库分离 | ✅ 已实现 | 独立元数据库，多任务共享 |
-| 表过滤 | ✅ 已实现 | 支持正则/通配符 |
-| DDL 处理 | ✅ 检测/告警 | 仅检测，不自动同步 |
-| 监控 API | ✅ 已实现 | /health, /status, /metrics |
-| 错误处理 | ✅ 已实现 | 重试策略、断路器模式 |
-| Snapshot | ✅ 已实现 | 全量数据同步，支持大表分片 |
-| Catchup | ✅ 已实现 | 完整的高低水位线算法 |
+| 模块 | 归属 | 状态 | 说明 |
+|------|------|------|------|
+| MySQL Binlog Capture | Debezium | ✅ 已接入 | Debezium 3.0 MySQL Connector |
+| FileOffsetBackingStore | xxt-cdc | ✅ 已实现 | 替代 MemoryOffset，数据持久化到 `data/offsets/{task}.dat` |
+| ChangeConsumer + Ack | xxt-cdc | ✅ 已实现 | 通过 AckRegistry 桥接 Pekko 异步流和 Debezium RecordCommitter |
+| DebeziumEventNormalizer | xxt-cdc | ✅ 已实现 | Jackson 解析 Debezium JSON，处理全部行 |
+| Apply 失败 FailFast | xxt-cdc | ✅ 已实现 | `failedEvents.nonEmpty → Future.failed`，Supervision.Stop |
+| Snapshot Orchestration | xxt-cdc + Debezium | 🚧 骨架已有，验证中 | Debezium snapshot 接入与阶段编排 |
+| Catchup / Cutover | xxt-cdc | 🚧 骨架已有，验证中 | Low/High Watermark 概念已有 |
+| Offset/Ack 端到端 | xxt-cdc | 🚧 已实现 ack 机制，待端到端验证 |
+| Table Filter | xxt-cdc | ✅ 已实现 | |
+| Hash Partition Router | xxt-cdc | ✅ 已实现 | |
+| Parallel Apply Worker | xxt-cdc | ✅ 已实现 | |
+| Idempotent Sink | xxt-cdc | 🚧 完善中 | MySQL Upsert/Delete |
+| Runtime Metadata Store | xxt-cdc | ✅ 已实现 | 独立 metadata DB |
+| Metrics API | xxt-cdc | ✅ 已实现 | /health, /metrics |
 
 ## 🆕 最新更新（2026-01-10）
 
@@ -113,7 +162,7 @@ CREATE DATABASE IF NOT EXISTS xxt_cdc
 ```
 
 **3. 环境要求**
-- JDK 11+
+- JDK 17+
 - Scala 2.13.14
 - SBT 1.12.0
 - MySQL 5.7+ 或 8.0+
@@ -186,7 +235,7 @@ cdc {
     store-type = "mysql"        # mysql 或 file
     commit-interval = 5s        # 提交频率
     start-from-latest = true    # true=从最新位置，false=从头开始
-    enable-snapshot = false     # ⚠️ 生产环境必须 false（未完成）
+    enable-snapshot = false     # 默认关闭；测试环境验证后再启用 Snapshot/Catchup
     
     mysql {
       table-name = "cdc_offsets"
@@ -202,7 +251,14 @@ cdc {
 
 ### 启动方式
 
-**方式 1: SBT（开发）**
+**方式 1: Docker Demo**
+```bash
+bash scripts/demo.sh
+```
+
+该脚本会构建 assembly jar，启动 source MySQL、target MySQL 和 `xxt-cdc`，向 `cdc_demo_events` 写入 INSERT / UPDATE / DELETE，并等待 `scripts/check-consistency.sh` 校验通过。
+
+**方式 2: SBT（开发）**
 ```bash
 # 使用默认配置
 sbt run
@@ -211,7 +267,7 @@ sbt run
 sbt -Dconfig.file=/path/to/app.conf run
 ```
 
-**方式 2: JAR（生产）**
+**方式 3: JAR（生产）**
 ```bash
 # 打包
 sbt assembly
@@ -237,7 +293,7 @@ java -Xmx2G -Xms1G \
 | `offset.store-type` | String | mysql | 偏移量存储类型 | mysql, file |
 | `offset.commit-interval` | Duration | 5s | 提交频率 | 1s-30s |
 | `offset.start-from-latest` | Boolean | true | 是否从最新位置开始 | true, false |
-| `offset.enable-snapshot` | Boolean | false | 是否启用快照（⚠️未完成） | **必须 false** |
+| `offset.enable-snapshot` | Boolean | false | 是否启用 Snapshot/Catchup | 建议测试验证后开启 |
 | `filter.include-table-patterns` | Array | [] | 包含表（支持正则/通配符） | ["users", "order.*"] |
 | `filter.exclude-table-patterns` | Array | [] | 排除表（支持正则/通配符） | ["temp_.*", ".*_bak"] |
 
@@ -282,209 +338,36 @@ SELECT * FROM xxt_cdc.cdc_offsets;
 
 ### 系统架构图
 
+```mermaid
+flowchart TD
+  Source["Source MySQL"] -->|binlog| Debezium["Debezium MySQL Connector / Debezium Engine"]
+  Debezium -->|SourceRecord / ChangeEvent| Adapter["Debezium Event Adapter"]
+  Adapter -->|internal ChangeEvent| Runtime["Pekko Streams Runtime"]
+  Runtime --> Filter["Table Filter"]
+  Filter --> Router["Hash Partition Router"]
+  Router --> Batch["Batch Buffer"]
+  Batch --> Workers["Parallel Apply Workers"]
+  Workers --> Sink["Idempotent Sink Connector"]
+  Sink --> Target["Target MySQL / OLAP / JDBC Sink"]
+  Sink --> Ack["Offset / Ack Coordinator"]
+  Ack --> Metadata["Runtime Metadata Store"]
+  Runtime --> API["/health /status /metrics"]
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          MySQL CDC Service                               │
-│                                                                          │
-│  ┌────────────────┐    ┌──────────────────────────────────────────┐   │
-│  │  Binlog Reader │───▶│         Event Processing Pipeline         │   │
-│  │  (Single Thread)│    │                                          │   │
-│  └────────────────┘    │  ┌────────────┐    ┌─────────────────┐  │   │
-│          │             │  │ Normalizer │───▶│     Router      │  │   │
-│          │             │  └────────────┘    └─────────────────┘  │   │
-│          ▼             │          │                   │           │   │
-│  ┌────────────────┐    │          ▼                   ▼           │   │
-│  │ Offset Manager │    │  ┌────────────────────────────────────┐ │   │
-│  │  (State Track) │    │  │       Apply Workers (Parallel)     │ │   │
-│  └────────────────┘    │  │         (Hash-based Routing)       │ │   │
-│          │             │  └────────────────────────────────────┘ │   │
-│          │             │                             │            │   │
-│          │             └─────────────────────────────┼────────────┘   │
-│          │                                           │                │
-│          └───────────────────────────────────────────┘                │
-│                                                      │                │
-└──────────────────────────────────────────────────────┼────────────────┘
-                                                       │
-                                                       ▼
-                                            ┌──────────────────┐
-                                            │  Target MySQL    │
-                                            │  (Idempotent)    │
-                                            └──────────────────┘
-```
-
-### 详细架构说明
-
-#### 1. 数据流处理架构
-
-```
-Source MySQL Binlog
-        │
-        ▼
-┌───────────────────┐
-│  Binlog Reader    │  ← 单线程顺序读取，保证事件顺序
-│  - GTID Support   │
-│  - Auto Reconnect │
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│ Event Normalizer  │  ← 标准化不同类型的 Binlog 事件
-│  - INSERT/UPDATE  │
-│  - DELETE/DDL     │
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│  Event Router     │  ← 基于 hash(table+pk) 分区
-│  - Consistent Hash│
-│  - Order Preserve │
-└───────────────────┘
-        │
-        ├─────┬─────┬─────┐
-        ▼     ▼     ▼     ▼
-    ┌─────┬─────┬─────┬─────┐
-    │ W1  │ W2  │ W3  │ W4  │  ← 并行 Apply Workers
-    └─────┴─────┴─────┴─────┘
-        │     │     │     │
-        └─────┴─────┴─────┘
-              │
-              ▼
-    ┌──────────────────┐
-    │ Idempotent Sink  │  ← 幂等写入，支持重试
-    │ - ON DUPLICATE   │
-    │ - Connection Pool│
-    └──────────────────┘
-              │
-              ▼
-        Target MySQL
-```
-
-#### 2. 状态管理架构
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                  Offset Coordinator                      │
-│                                                          │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐           │
-│  │ RECEIVED │──▶│ APPLIED  │──▶│COMMITTED │           │
-│  └──────────┘   └──────────┘   └──────────┘           │
-│                                                          │
-│  Partition 0: [pos: 1000, state: COMMITTED]            │
-│  Partition 1: [pos: 1050, state: APPLIED]              │
-│  Partition 2: [pos: 980,  state: RECEIVED]             │
-│  ...                                                     │
-│                                                          │
-│  Committable Position: min(all partitions) = 980        │
-└─────────────────────────────────────────────────────────┘
-                        │
-                        ▼
-              ┌──────────────────┐
-              │  Offset Store    │
-              │  - MySQL/File    │
-              │  - Atomic Commit │
-              └──────────────────┘
-```
-
-#### 3. 快照与追赶架构
-
-```
-┌─────────────────────────────────────────────────────────┐
-│              Snapshot-Catchup Process                    │
-│                                                          │
-│  Phase 1: Record Low Watermark                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  Current Binlog Position: file=mysql-bin.000123   │ │
-│  │                          pos=4567890               │ │
-│  └────────────────────────────────────────────────────┘ │
-│                        │                                 │
-│                        ▼                                 │
-│  Phase 2: Full Snapshot                                 │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  SELECT * FROM table                               │ │
-│  │  - Chunked by Primary Key                          │ │
-│  │  - Parallel Processing                             │ │
-│  └────────────────────────────────────────────────────┘ │
-│                        │                                 │
-│                        ▼                                 │
-│  Phase 3: Record High Watermark                         │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  Current Binlog Position: file=mysql-bin.000125   │ │
-│  │                          pos=9876543               │ │
-│  └────────────────────────────────────────────────────┘ │
-│                        │                                 │
-│                        ▼                                 │
-│  Phase 4: Catchup (从 Low 到 High Watermark)            │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  Consume Binlog from Low Watermark                │ │
-│  │  - Apply incremental changes                       │ │
-│  │  - Filter snapshot tables only                     │ │
-│  │  - Until High Watermark                            │ │
-│  └────────────────────────────────────────────────────┘ │
-│                        │                                 │
-│                        ▼                                 │
-│  Phase 5: Streaming (实时同步)                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │  Real-time CDC from High Watermark                │ │
-│  └────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────┘
-```
-
-> ✅ **已实现**: Snapshot/Catchup 功能已完整实现，包括高低水位线算法。
-> 
-> ⚠️ **注意**: 虽然功能已实现，但建议在测试环境充分验证后再用于生产。生产环境建议设置 `enable-snapshot = false`。
 
 ### 核心组件详解
 
-#### 1. Binlog Reader
-- **职责**: 单线程顺序读取 MySQL Binlog 事件
-- **特性**:
-  - 支持 GTID 和 File+Position 两种模式
-  - 自动重连和断点续传
-  - 背压控制，防止内存溢出
-- **技术**: mysql-binlog-connector-java
+| 组件 | 归属 | 职责 |
+|------|------|------|
+| Debezium MySQL Connector | Debezium | 读取 binlog、执行 snapshot、维护 source offset 和 schema history |
+| Debezium Event Adapter | xxt-cdc | 将 Debezium event 转成内部 `ChangeEvent` |
+| Table Filter | xxt-cdc | 按库表配置过滤同步范围 |
+| Hash Partition Router | xxt-cdc | 按 `table + primary key` 分区，保证同主键顺序 |
+| Apply Workers | xxt-cdc | 批量并行写入目标端 |
+| Idempotent Sink | xxt-cdc | 使用 Upsert/Delete 吸收重复投递 |
+| Offset/Ack Coordinator | xxt-cdc + Debezium | 目标是 Sink 成功后再 Ack Debezium record |
+| Management API | xxt-cdc | 暴露健康检查、状态和指标 |
 
-#### 2. Event Normalizer
-- **职责**: 标准化不同类型的数据变更事件
-- **特性**:
-  - 支持 INSERT/UPDATE/DELETE 事件
-  - 处理所有 MySQL 数据类型
-  - DDL 事件检测和告警
-- **输出**: 统一的 ChangeEvent 格式
-
-#### 3. Event Router
-- **职责**: 将事件路由到不同的处理分区
-- **特性**:
-  - 基于 hash(table + primary_key) 的一致性哈希
-  - 保证同表同主键的事件顺序性
-  - 可配置的分区数量
-- **算法**:
-  ```
-  partition = hash(table_id + primary_key) % partition_count
-  ```
-
-#### 4. Apply Workers
-- **职责**: 并行处理数据写入
-- **特性**:
-  - 多线程并行处理
-  - 批量写入优化
-  - 自动重试机制
-- **并行度**: 可配置（默认 8 个 worker）
-
-#### 5. Offset Coordinator
-- **职责**: 管理消费位点和状态
-- **特性**:
-  - 三阶段状态机（RECEIVED → APPLIED → COMMITTED）
-  - 多分区协调
-  - 原子性提交
-- **一致性**: Effectively-once 语义
-
-#### 6. Idempotent Sink
-- **职责**: 幂等写入目标数据库
-- **特性**:
-  - INSERT: `ON DUPLICATE KEY UPDATE`
-  - UPDATE: 基于主键，不依赖 before 值
-  - DELETE: 忽略不存在错误
-- **连接池**: HikariCP
+详细架构见 [架构总览](docs/ARCHITECTURE_OVERVIEW.md)。
 
 ### 技术栈
 
@@ -494,7 +377,7 @@ Source MySQL Binlog
 | Actor 框架 | Apache Pekko | 1.1.3 |
 | 流处理 | Pekko Streams | 1.1.3 |
 | HTTP 服务 | Pekko HTTP | 1.0.1 |
-| Binlog 解析 | mysql-binlog-connector-java | 0.29.2 |
+| Binlog 解析 | Debezium Embedded | 3.0.0.Final |
 | 连接池 | HikariCP | 5.1.0 |
 | 监控 | Prometheus | 0.16.0 |
 | 日志 | Logback + Scala Logging | 1.4.12 |
@@ -503,17 +386,17 @@ Source MySQL Binlog
 ### 性能特性
 
 #### 吞吐量
-- **单表**: 10,000+ TPS
-- **多表**: 50,000+ TPS（取决于硬件配置）
+- **单表**: 目标 10,000 TPS（待 benchmark 验证）
+- **多表**: 目标 50,000 TPS（待 benchmark 验证）
 - **批处理**: 支持 100-1000 事件/批次
 
 #### 延迟
-- **P50**: < 100ms
-- **P95**: < 500ms
-- **P99**: < 1s
+- **P50**: 目标 < 100ms（待 benchmark 验证）
+- **P95**: 目标 < 500ms（待 benchmark 验证）
+- **P99**: 目标 < 1s（待 benchmark 验证）
 
 #### 可扩展性
-- **表数量**: 支持 10万+ 活跃表
+- **表数量**: 目标支持 10万+ 活跃表（待验证）
 - **并行度**: 可配置 4-32 个 worker
 
 #### 资源使用
@@ -525,13 +408,14 @@ Source MySQL Binlog
 
 #### Effectively-Once 语义
 ```
-1. 事件读取 → RECEIVED 状态
-2. 事件应用 → APPLIED 状态
-3. 偏移量提交 → COMMITTED 状态
-
-只有所有分区都达到 COMMITTED 状态，
-才会提交全局偏移量到持久化存储。
+1. Debezium event 进入 runtime
+2. xxt-cdc adapter 转换为内部 ChangeEvent
+3. Hash Router 保证同主键进入同一分区
+4. Sink apply 成功
+5. Ack Debezium record / 推进 Sink checkpoint
 ```
+
+`xxt-cdc` 不声明严格 exactly-once。当前目标是 Sink 成功后再 Ack Debezium record，并结合目标端 Upsert/Delete 幂等写入，实现异常重启后的重复投递吸收和最终一致性。
 
 #### 幂等性保证
 ```sql
@@ -549,12 +433,12 @@ DELETE FROM table WHERE id = 1;
 
 #### 故障恢复
 ```
-1. 服务崩溃 → 从最后提交的偏移量恢复
-2. 网络中断 → 自动重连和重试
-3. 目标库故障 → 断路器保护，自动降级
+1. Sink 成功但 Ack 前崩溃 → Debezium 可能重复投递，Sink 幂等收敛
+2. Event 收到但 Sink 未成功 → 未 Ack，重启后继续投递
+3. Target 故障 → 不确认未成功写入的 record
 ```
 
-更多架构细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+更多一致性细节见 [Offset 与一致性](docs/offset-and-consistency.md)。
 
 ## 📊 监控与管理
 
@@ -712,43 +596,51 @@ location /api/ {
 
 | 功能 | 状态 | 说明 | 建议 |
 |------|------|------|------|
-| Snapshot | ✅ 已实现 | 代码已完整实现，包括高低水位线算法 | 测试环境验证后使用 |
-| Catchup | ✅ 已实现 | 完整的增量追赶逻辑 | 测试环境验证后使用 |
+| Snapshot | 🚧 骨架已实现，验证中 | 代码流程已具备，端到端一致性验证中 | 不宣传为已完成能力 |
+| Catchup | 🚧 骨架已实现，验证中 | Low/High Watermark 流程已具备，验证中 | 不宣传为已完成能力 |
 | DDL 自动同步 | 🚧 未实现 | 仅检测/告警 | 手动执行 DDL |
 
 ### 当前限制
 
-1. **Snapshot/Catchup 功能建议充分测试**
-   - 状态：代码已完整实现
-   - 影响：建议在测试环境充分验证
-   - 建议：生产环境初期可设置 `enable-snapshot = false`，待验证后再启用
+1. **不直接解析 MySQL binlog**
+   - 说明：binlog capture、snapshot、schema history 由 Debezium 负责
+   - 影响：需要正确配置 Debezium connector、server-id、权限和 offset/schema history 存储
 
-2. **BinlogReader 无自动重连**
-   - 影响：网络中断时需手动重启
-   - 规避：使用进程监控工具（systemd/supervisor）
+2. **DDL 不自动同步到目标端**
+   - 说明：Debezium 可以捕获 schema change，但 xxt-cdc 当前不自动执行目标端 DDL
+   - 规避：提前保证 source/target schema 兼容
 
-3. **ApplyWorker 失败不阻断 offset**
-   - 影响：失败事件会被跳过
-   - 规避：监控 `cdc_errors_total` 指标
+3. **不声明严格 exactly-once**
+   - 说明：当前目标是 Debezium Ack + Sink 幂等写入形成 effectively-once
+   - 规避：使用幂等 Upsert/Delete，并通过 checksum 校验最终一致性
 
-4. **管理 API 硬编码部分数据**
-   - 影响：部分状态信息不准确
-   - 规避：以 Prometheus 指标为准
+4. **无主键表不建议同步**
+   - 影响：Hash 路由和幂等 Sink 缺少稳定唯一键
+   - 规避：为同步表提供主键或稳定唯一键
 
-5. **大量 INFO 级提交日志**
-   - 影响：日志文件增长快
-   - 规避：调整日志级别或增加日志轮转
+更多边界见 [限制与边界](docs/limitations.md)。
 
 ## 📚 文档
 
-- [快速开始指南](docs/QUICK_START_GUIDE.md)
-- [架构设计](docs/ARCHITECTURE.md)
+- [架构总览](docs/ARCHITECTURE_OVERVIEW.md)
+- [Debezium 接入设计](docs/debezium-integration.md)
+- [Snapshot / Catchup / Streaming Cutover](docs/snapshot-catchup.md)
+- [事件模型](docs/event-model.md)
+- [Offset 与一致性](docs/offset-and-consistency.md)
+- [路由与并行 Apply](docs/routing-and-parallel-apply.md)
+- [Sink 幂等性](docs/sink-idempotency.md)
+- [限制与边界](docs/limitations.md)
+- [对比说明](docs/comparison.md)
+- [故障注入计划](docs/fault-injection.md)
+- [故障恢复与一致性边界](docs/FAULT_TOLERANCE.md)
+- [一致性验证报告](docs/CONSISTENCY_VERIFICATION.md)
+- [压测方案](docs/BENCHMARK.md)
 - [配置说明](docs/CONFIGURATION.md)
 - [API 文档](docs/API.md)
 - [运维指南](docs/OPERATIONS.md)
 - [故障排查](docs/TROUBLESHOOTING.md)
-- [示例配置](docs/EXAMPLES.md)
-- [元数据库改进](docs/METADATA_DATABASE_IMPROVEMENT.md) ⭐ 新增
+- [元数据库改进](docs/METADATA_DATABASE_IMPROVEMENT.md)
+- [示例配置](docs/example.conf)
 
 ## 🔄 版本兼容性
 
@@ -756,9 +648,9 @@ location /api/ {
 |------|------|------|
 | Scala | 2.13.14 | 必需 |
 | SBT | 1.12.0 | 必需 |
-| JDK | 11+ | 推荐 11 或 17 |
+| JDK | 17+ | 推荐 17 或 21 |
 | Pekko | 1.1.3 | 核心依赖 |
-| mysql-binlog-connector | 0.29.2 | Binlog 解析 |
+| Debezium | 3.0.0.Final | Binlog 解析 |
 | HikariCP | 5.1.0 | 连接池 |
 | MySQL | 5.7 / 8.0 | 支持 GTID 和非 GTID |
 

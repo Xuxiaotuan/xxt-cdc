@@ -80,24 +80,18 @@ class DefaultApplyWorker(
     batch: Seq[ChangeEvent]
   ): Future[(Int, Seq[(ChangeEvent, Throwable)], BinlogPosition)] = {
     
-    // 并行处理批次中的所有事件
-    val futures = batch.map { event =>
-      applyEvent(event).map { _ =>
-        (Some(event), None)
-      }.recover { case ex =>
-        logger.error(s"Failed to apply event: ${event.tableId}, operation: ${event.operation}", ex)
-        (None, Some((event, ex)))
-      }
-    }
-    
-    Future.sequence(futures).map { results =>
-      val successEvents = results.flatMap(_._1)
-      val failedEvents = results.flatMap(_._2)
-      val lastPosition = batch.lastOption.map(_.position).getOrElse(
-        cn.xuyinyin.cdc.model.FilePosition("", 0)
-      )
-      
-      (successEvents.size, failedEvents, lastPosition)
+    // 同 partition 内严格串行 apply，保证同主键顺序
+    // Hash Router 保证同主键进同一 partition，这里不能再并发破坏顺序
+    batch.foldLeft(Future.successful((0, Seq.empty[(ChangeEvent, Throwable)], batch.last.position))) {
+      case (accFuture, event) =>
+        accFuture.flatMap { case (successCount, failedEvents, lastPos) =>
+          applyEvent(event).map { _ =>
+            (successCount + 1, failedEvents, event.position)
+          }.recover { case ex =>
+            logger.error(s"Failed to apply event: ${event.tableId}, operation: ${event.operation}", ex)
+            (successCount, failedEvents :+ (event, ex), event.position)
+          }
+        }
     }
   }
   

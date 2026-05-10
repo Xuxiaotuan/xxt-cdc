@@ -118,10 +118,10 @@ cdc {
   
   # 元数据库配置
   metadata {
-    host = "100.82.226.63"
-    port = 31765
-    username = "root"
-    password = "asd123456"
+    host = "localhost"
+    port = 3307
+    username = "cdc_user"
+    password = "${CDC_METADATA_PASSWORD}"
     database = "xxt_cdc"        # 元数据库名称
     
     connection-pool {

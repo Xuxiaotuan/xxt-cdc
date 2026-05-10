@@ -42,6 +42,7 @@ trait BinlogReader {
  * @param rawData 原始事件数据对象
  */
 case class RawBinlogEvent(
+  recordId: String,
   position: BinlogPosition,
   timestamp: Instant,
   eventType: BinlogEventType,

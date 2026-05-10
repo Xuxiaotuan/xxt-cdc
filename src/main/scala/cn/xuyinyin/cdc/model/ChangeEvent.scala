@@ -14,6 +14,7 @@ import java.time.Instant
  * @param position binlog 位置
  */
 case class ChangeEvent(
+  recordId: String,
   tableId: TableId,
   operation: Operation,
   primaryKey: Map[String, Any],

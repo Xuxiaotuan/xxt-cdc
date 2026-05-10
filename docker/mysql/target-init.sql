@@ -2,6 +2,7 @@
 
 -- 创建目标数据库
 CREATE DATABASE IF NOT EXISTS test_target;
+CREATE DATABASE IF NOT EXISTS xxt_cdc;
 USE test_target;
 
 -- 创建与源数据库相同的表结构
@@ -18,4 +19,11 @@ CREATE TABLE orders (
     product_name VARCHAR(100) NOT NULL,
     amount DECIMAL(10,2) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE cdc_demo_events (
+    id INT PRIMARY KEY,
+    event_key VARCHAR(64) NOT NULL,
+    event_value VARCHAR(255) NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );

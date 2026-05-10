@@ -1,0 +1,22 @@
+# SBT / Scala
+target/
+project/target/
+project/project/
+.bsp/
+.bloop/
+.metals/
+
+# IDE / editor
+.idea/
+.vscode/
+.kiro/
+
+# Logs and local runtime files
+logs/
+*.log
+data/offsets/
+
+# OS files
+.DS_Store
+.claude/
+.omc/

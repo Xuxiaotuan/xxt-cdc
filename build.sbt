@@ -1,3 +1,5 @@
+import com.typesafe.sbt.SbtMultiJvm.MultiJvmKeys.MultiJvm
+
 ThisBuild / scalaVersion     := "2.13.14"
 ThisBuild / version          := "0.1.0-SNAPSHOT"
 ThisBuild / organization     := "cn.xuyinyin"
@@ -17,15 +19,19 @@ val pekkoHttpVersion   = "1.0.1"
 val pekkoConnectorsVer = "1.0.2"
 
 // 数据处理和存储
-val arrowVersion      = "18.0.0"  // Arrow Flight for DataFusion integration
-val calciteVersion    = "1.39.0"  // SQL parser
-val levelDbVersion    = "1.8"     // Event Sourcing storage
-val levelDbApiVersion = "0.12"
 val h2Version         = "2.3.232" // Test database
 
 // JSON和序列化
 val jacksonVersion   = "2.17.2" // 统一Jackson版本，避免冲突
 val sprayJsonVersion = "1.3.6"
+
+// 强制使用 Jackson 2.17.x（Pekko 兼容）
+ThisBuild / dependencyOverrides ++= Seq(
+  "com.fasterxml.jackson.core" % "jackson-databind" % jacksonVersion,
+  "com.fasterxml.jackson.core" % "jackson-core" % jacksonVersion,
+  "com.fasterxml.jackson.core" % "jackson-annotations" % jacksonVersion,
+  "com.fasterxml.jackson.module" %% "jackson-module-scala" % jacksonVersion
+)
 
 // 日志系统
 val logbackVersion      = "1.4.12"
@@ -39,22 +45,24 @@ val scalatestVersion     = "3.2.19" // 统一ScalaTest版本
 val scalacheckVersion    = "1.17.0"
 val scalatestPlusVersion = "3.2.17.0"
 
-// 网络和RPC
-val grpcVersion = "1.70.0"
-
 // 工具库
 val commonsPoolVersion = "2.12.0"
 
 // MySQL 连接器
 val mysqlConnectorVersion = "8.0.33"
-val mysqlBinlogVersion    = "0.29.2"
 val hikariCPVersion       = "5.1.0"
+
+// Debezium CDC (生产级 binlog 读取)
+val debeziumVersion = "3.0.0.Final"
 
 // ================================
 // 通用设置 - 所有模块共享的配置
 // ================================
 lazy val commonSettings = Seq(
   name       := projectName,
+
+  // 依赖冲突解决策略
+  libraryDependencySchemes += "com.github.luben" % "zstd-jni" % VersionScheme.Always,
 
   // ================================
   // Scala编译器选项 - 启用严格检查
@@ -74,9 +82,9 @@ lazy val commonSettings = Seq(
     "-Xlint:unchecked",
     "-Xlint:deprecation",
     "-source",
-    "11",
+    "17",
     "-target",
-    "11"
+    "17"
   ),
 
   // ================================
@@ -89,9 +97,6 @@ lazy val commonSettings = Seq(
 
     // 本地库路径
     "-Djava.library.path=./target/native",
-
-    // Pekko集群种子节点
-    "-Dpekko.cluster.seed-nodes.0=pekko://pekko-cluster-system@127.0.0.1:2551",
 
     // GC日志配置 - 用于性能分析和调优
     "-Xlog:gc*:file=logs/gc.log:time,uptime,level,tags",
@@ -112,8 +117,11 @@ lazy val commonSettings = Seq(
 
     // MySQL 连接器
     "com.mysql"        % "mysql-connector-j"            % mysqlConnectorVersion,
-    "com.zendesk"      % "mysql-binlog-connector-java"  % mysqlBinlogVersion,
     "com.zaxxer"       % "HikariCP"                     % hikariCPVersion,
+
+    // Debezium CDC (生产级 binlog 读取)
+    "io.debezium"      % "debezium-embedded"            % debeziumVersion,
+    "io.debezium"      % "debezium-connector-mysql"     % debeziumVersion,
 
     // 测试框架
     "org.scalatest" %% "scalatest" % scalatestVersion % Test
@@ -124,8 +132,12 @@ lazy val commonSettings = Seq(
 // 根项目配置 - 简化版本
 // ================================
 lazy val root = (project in file("."))
+  .enablePlugins(MultiJvmPlugin)
+  .configs(MultiJvm)
   .settings(commonSettings)
   .settings(
+    // MultiJvm 不并行跑（多 JVM 同时跳上去对端口不友好）
+    MultiJvm / parallelExecution := false,
     name         := projectName,
     publish      := {}, // 根项目不发布
     publishLocal := {}, // 根项目不本地发布
@@ -134,6 +146,18 @@ lazy val root = (project in file("."))
     // 应用程序配置
     // ================================
     Compile / mainClass := Some("cn.xuyinyin.cdc.CDCApplication"),
+    assembly / mainClass := Some("cn.xuyinyin.cdc.CDCApplication"),
+    assembly / assemblyJarName := s"${name.value}-assembly-${version.value}.jar",
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "services", _*) => MergeStrategy.concat
+      case PathList("META-INF", _*)             => MergeStrategy.discard
+      case "module-info.class"                  => MergeStrategy.discard
+      case PathList("javax", "xml", "bind", _*) => MergeStrategy.first
+      case PathList("javax", "activation", _*)  => MergeStrategy.first
+      case PathList("javax", "ws", "rs", _*)    => MergeStrategy.first
+      case PathList("google", "protobuf", "descriptor.proto") => MergeStrategy.first
+      case x                                    => (assembly / assemblyMergeStrategy).value(x)
+    },
 
     // ================================
     // 依赖库配置
@@ -159,10 +183,6 @@ lazy val root = (project in file("."))
       // ================================
       "org.apache.pekko" %% "pekko-persistence-typed" % pekkoVersion,
       "org.apache.pekko" %% "pekko-persistence-query" % pekkoVersion,
-
-      // LevelDB存储引擎
-      "org.fusesource.leveldbjni" % "leveldbjni-all" % levelDbVersion,
-      "org.iq80.leveldb"          % "leveldb"        % levelDbApiVersion,
 
       // ================================
       // Pekko Connectors - 数据集成
@@ -197,7 +217,7 @@ lazy val root = (project in file("."))
       // 测试依赖
       // ================================
       "org.apache.pekko"  %% "pekko-stream-testkit"      % pekkoVersion         % Test,
-      "org.apache.pekko"  %% "pekko-multi-node-testkit"  % pekkoVersion         % Test,
+      "org.apache.pekko"  %% "pekko-multi-node-testkit"  % pekkoVersion       % "test;multi-jvm",
       "org.apache.pekko"  %% "pekko-actor-testkit-typed" % pekkoVersion         % Test,
       "org.apache.pekko"  %% "pekko-persistence-testkit" % pekkoVersion         % Test,
       "org.apache.pekko"  %% "pekko-http-testkit"        % pekkoHttpVersion     % Test,

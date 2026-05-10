@@ -409,13 +409,13 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
   
   /** 初始化 Binlog 读取器：使用 Source Connector 创建 */
   private def initializeBinlogReader(): Future[Unit] = Future {
-    binlogReader = Some(sourceConnector.get.createReader(config.source))
+    binlogReader = Some(sourceConnector.get.createReader(config.source, config.taskName))
     logger.debug("Binlog reader initialized")
   }
   
   /** 初始化事件标准化器：使用 Source Connector 创建 */
   private def initializeEventNormalizer(): Future[Unit] = Future {
-    eventNormalizer = Some(sourceConnector.get.createNormalizer(catalogService.get, config.source.database))
+    eventNormalizer = Some(sourceConnector.get.createNormalizer(catalogService.get, config.source.database, config.taskName))
     logger.debug("Event normalizer initialized")
   }
   
@@ -649,8 +649,7 @@ class CDCEngine(config: CDCConfig)(implicit mat: Materializer, ec: ExecutionCont
       eventNormalizer.get,
       eventRouter.get,
       applyWorkers,
-      offsetCoordinator.get,
-      Some(metrics)  // 传递 metrics
+      offsetCoordinator.get
     ))
     
     // 启动管道（异步运行）

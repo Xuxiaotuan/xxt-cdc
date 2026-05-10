@@ -1,7 +1,7 @@
 package cn.xuyinyin.cdc.engine
 
 import cn.xuyinyin.cdc.config.CDCConfig
-import cn.xuyinyin.cdc.reader.MySQLBinlogReader
+import cn.xuyinyin.cdc.reader.DebeziumBinlogReader
 import cn.xuyinyin.cdc.logging.CDCLogging
 import cn.xuyinyin.cdc.model._
 import cn.xuyinyin.cdc.normalizer.EventNormalizer
@@ -215,7 +215,7 @@ object CDCEngineUtils extends CDCLogging {
     logger.info(s"Creating catchup binlog reader from position: ${lowWatermark.asString}")
     
     // 创建临时的 BinlogReader 用于 catchup
-    val catchupReader = MySQLBinlogReader(config.source)
+    val catchupReader = DebeziumBinlogReader(config.source, config.taskName)
     
     // 记录开始时间，用于性能统计
     val startTime = System.currentTimeMillis()
