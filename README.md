@@ -385,19 +385,16 @@ flowchart TD
 
 ### 性能特性
 
-#### 吞吐量
-- **单表**: 目标 10,000 TPS（待 benchmark 验证）
-- **多表**: 目标 50,000 TPS（待 benchmark 验证）
-- **批处理**: 支持 100-1000 事件/批次
+> **现状**: 尚未做基准测试。具体吞吐 / 延迟 / 表数量上限等数字待 benchmark 后补充，本节不预设目标值以避免误导。
+>
+> 已知约束：
+> - Debezium MySQL Connector 单 source 单线程，源端瓶颈受 binlog 解析速率限制
+> - Apply 端按 `hash(table + pk)` 路由到固定 partition，吞吐随 partition 数线性扩展，但受目标库写入能力上限限制
+> - 同主键事件强制串行 apply，单 key 高频更新场景吞吐受限
+> - 详细方案与结果记录见 [BENCHMARK.md](docs/BENCHMARK.md)
 
-#### 延迟
-- **P50**: 目标 < 100ms（待 benchmark 验证）
-- **P95**: 目标 < 500ms（待 benchmark 验证）
-- **P99**: 目标 < 1s（待 benchmark 验证）
-
-#### 可扩展性
-- **表数量**: 目标支持 10万+ 活跃表（待验证）
-- **并行度**: 可配置 4-32 个 worker
+- **批处理**: 配置项 `parallelism.batch-size`，建议 100-1000 事件/批次
+- **并行度**: 可配置 4-32 个 worker（`parallelism.partition-count`）
 
 #### 资源使用
 - **内存**: 2-4GB

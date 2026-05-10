@@ -42,6 +42,9 @@ class CDCStreamPipeline(
   private val batchSize      = config.parallelism.batchSize
   private val flushInterval  = config.parallelism.flushInterval
 
+  /** 待 ack 的 batch 队列—详见 [[AckQueue]]。 */
+  private val ackQueue = new AckQueue()
+
   def run(startPosition: BinlogPosition): Future[Done] = {
     logger.info(s"Starting CDC stream pipeline from position: ${startPosition.asString}")
     createPipelineGraph(startPosition).run()
@@ -92,6 +95,8 @@ class CDCStreamPipeline(
                   val lastPos = result.lastAppliedPosition
                   val recordIds = events.map(_.recordId).toVector
                   offsetCoordinator.markApplied(partition, lastPos)
+                  // 入队等待 commit checkpoint 推进后批量 ack（按 recordId 精确 ack）
+                  ackQueue.offer(lastPos, recordIds)
                   logger.debug(s"Partition $partition: ${result.successCount} events applied, pos=$lastPos, rids=${recordIds.take(3)}...")
                   Future.successful(Right(AppliedBatch(lastPos, recordIds)))
                 }
@@ -104,15 +109,19 @@ class CDCStreamPipeline(
         }
 
         // 5. Offset Committer — 使用 continuous checkpoint
+        //   - 用 groupedWithin 节流（不用 conflate，避免丢 recordIds）
+        //   - 每个时间窗内累积所有 batch；窗口结束后做一次 commit 检查
+        //   - 即便没有新 batch（empty group 已被 filter 过滤），也可触发 ack drain
         val offsetCommitter = builder.add(
           Flow[Either[Throwable, AppliedBatch]]
             .collect { case Right(batch) => batch }
-            .conflate((a, _) => a)
-            .throttle(1, config.offset.commitInterval)
-            .mapAsync(1) { batch =>
+            .groupedWithin(1024, config.offset.commitInterval)
+            .filter(_.nonEmpty)
+            .mapAsync(1) { _ =>
               offsetCoordinator.getCommittablePosition() match {
                 case Some(checkpoint) =>
-                  commitAndAck(checkpoint)
+                  val recordIdsToAck = ackQueue.drainUpTo(checkpoint)
+                  commitAndAck(checkpoint, recordIdsToAck)
                 case None =>
                   Future.successful(Done)
               }
@@ -127,15 +136,15 @@ class CDCStreamPipeline(
     })
   }
 
-  private def commitAndAck(position: BinlogPosition): Future[Done] = {
+  private def commitAndAck(position: BinlogPosition, recordIdsToAck: Vector[String]): Future[Done] = {
     offsetCoordinator.commit(position).map { _ =>
-      logger.info(s"Committed checkpoint: ${position.asString}")
+      logger.info(s"Committed checkpoint: ${position.asString}, ack ${recordIdsToAck.size} records")
 
       binlogReader match {
         case dbr: DebeziumBinlogReader =>
-          // ack 通过 recordId 粒度，已在 DebeziumBinlogReader 内部管理
-          // commit 成功后，AckRegistry 中的回调会在 DebeziumBinlogReader.ack() 被调用时触发
-          // 这里先按 position 做批量 ack，后续可以改为 recordId 精确 ack
+          // 真闭环：commit checkpoint 成功后，按 recordId 精确触发
+          // Debezium RecordCommitter.markProcessed（通过 AckRegistry 桥接）
+          recordIdsToAck.foreach(dbr.ack)
         case _ =>
       }
       Done
