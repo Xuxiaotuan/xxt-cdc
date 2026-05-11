@@ -134,6 +134,12 @@ class DebeziumBinlogReader(
     ackRegistry.ack(recordId)
   }
 
+  /**
+   * 当前等待 ack 的 record 数量。
+   * 用于集成测试断言 commit 后回调表清空（证明 ack 闭环未泄漏）。
+   */
+  def ackPendingCount(): Int = ackRegistry.pendingCount()
+
   private def buildDebeziumConfig(startPosition: BinlogPosition): Properties = {
     val props = new Properties()
 
@@ -190,11 +196,20 @@ class DebeziumBinlogReader(
     props.setProperty("provide.transaction.metadata", "false")
     props.setProperty("include.schema.changes", "false")
 
+    // 关键：关闭 JSON envelope（schema 字段），让 Debezium 直接吐扁平 JSON。
+    // 否则 normalizer (Jackson 顶层读 op) 与 reader (正则) 解析口径不一致，
+    // 会导致所有事件被当作 "non-data operation" 丢弃。
+    props.setProperty("key.converter.schemas.enable", "false")
+    props.setProperty("value.converter.schemas.enable", "false")
+
     props.setProperty("max.batch.size", config.debeziumConfig.maxBatchSize.toString)
     props.setProperty("max.queue.size", config.debeziumConfig.maxQueueSize.toString)
     props.setProperty("poll.interval.ms", config.debeziumConfig.pollIntervalMs.toString)
 
     props.setProperty("time.precision.mode", "connect")
+    // DECIMAL 类型编码：默认 "precise" 会 Base64 编二进制，目标库无法识别；
+    // 用 "string" 保留精度且对下游透明。
+    props.setProperty("decimal.handling.mode", "string")
     props.setProperty("signal.enabled.channels", "source")
 
     logger.info(s"[${taskName}] Debezium configured: snapshot.mode=${props.getProperty("snapshot.mode")}, " +
@@ -333,4 +348,7 @@ class AckRegistry {
       }
     }
   }
+
+  /** 当前等待 ack 的 record 数量（测试断言闭环用）。 */
+  def pendingCount(): Int = callbacks.size()
 }

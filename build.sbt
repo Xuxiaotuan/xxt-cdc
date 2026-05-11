@@ -142,6 +142,20 @@ lazy val root = (project in file("."))
     publish      := {}, // 根项目不发布
     publishLocal := {}, // 根项目不本地发布
 
+    // Testcontainers 需要 Docker socket。若用 OrbStack（默认 socket 不在
+    // /var/run/docker.sock），自动指向 OrbStack；其他场景透传环境变量。
+    // testcontainers 1.21.4+ 已修复 docker-java API 协商问题，无需再手动设
+    // DOCKER_API_VERSION（保留 DOCKER_HOST 是为了 OrbStack 默认 socket 路径）。
+    Test / fork := true,
+    Test / envVars := {
+      val home = sys.props("user.home")
+      val orbstackSock = file(home) / ".orbstack" / "run" / "docker.sock"
+      val baseEnv = sys.env
+      if (orbstackSock.exists() && !baseEnv.contains("DOCKER_HOST")) {
+        baseEnv + ("DOCKER_HOST" -> s"unix://${orbstackSock.getAbsolutePath}")
+      } else baseEnv
+    },
+
     // ================================
     // 应用程序配置
     // ================================
@@ -224,6 +238,11 @@ lazy val root = (project in file("."))
       "org.scalatest"     %% "scalatest"                 % scalatestVersion     % Test,
       "org.scalatestplus" %% "scalacheck-1-17"           % scalatestPlusVersion % Test,
       "org.scalacheck"    %% "scalacheck"                % scalacheckVersion    % Test,
-      "com.h2database"     % "h2"                        % h2Version            % Test
+      "com.h2database"     % "h2"                        % h2Version            % Test,
+      // Testcontainers — 真 MySQL 容器跑 Debezium 端到端测试
+      // 1.21.4+ 修复了 Docker 29 API 协商（docker-java client 不再硬编码 1.32）
+      // 参考：testcontainers/testcontainers-java#11235
+      "org.testcontainers" % "mysql"                     % "1.21.4"             % Test,
+      "org.testcontainers" % "testcontainers"            % "1.21.4"             % Test
     )
   )
